@@ -43,7 +43,12 @@ def _efficient_throttle(flight, atmosphere_depth):
 
 
 def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, target_inclination_deg=0.0,
-               turn_start_altitude_m=250, turn_end_altitude_m=45000):
+               turn_start_altitude_m=10000, turn_end_altitude_m=45000):
+    """turn_start_altitude_m defaults to 10km, not straight off the pad --
+    staying vertical through the thick lower atmosphere (where most of the
+    drag is) before starting to pitch over avoids fighting aerodynamic
+    forces sideways while still low and slow; the turn happens entirely in
+    thinner air instead."""
     sc = client.space_center
 
     if vessel != sc.active_vessel:
