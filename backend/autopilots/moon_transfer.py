@@ -119,7 +119,17 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
     # both knobs together, for each coarse arrival-time candidate, picks
     # the number of extra parking-orbit laps that makes the resulting
     # apoapsis land as close as possible to the moon's real orbital radius.
-    best = None
+    #
+    # Among candidates that are all "good enough" (comfortably inside the
+    # moon's own sphere of influence, not just closest in the abstract),
+    # prefer whichever needs the fewest extra laps -- i.e. the soonest
+    # burn. The very best-accuracy candidate can require waiting for a
+    # specific alignment that's a long real-world wait away (confirmed
+    # live: one legitimate candidate needed ~56 hours of game time, ~68
+    # real minutes even at 50x warp) when a slightly-less-perfect-but-
+    # still-safely-inside-the-SOI candidate was available much sooner.
+    good_enough_m = moon.sphere_of_influence * 0.3
+    candidates = []
     for k in range(8):
         angle_needed = (target_angle - moon_angle_now) % (2 * math.pi) + k * 2 * math.pi
         arrival_ut = sc.ut + angle_needed / moon_rate
@@ -140,14 +150,18 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
         r_apo = 2 * a2 - r_peri
         if r_apo <= r_peri:
             continue  # degenerate for this k -- not a valid outward transfer
-        score = abs(r_apo - r2)  # how far the resulting apoapsis misses the moon's real orbit
-        if best is None or score < best[0]:
-            best = (score, r_apo, arrival_ut, burn_ut)
+        miss = abs(r_apo - r2)  # how far the resulting apoapsis misses the moon's real orbit
+        candidates.append((miss, r_apo, arrival_ut, burn_ut, laps))
 
-    if best is None:
+    if not candidates:
         raise ValueError(f"could not find a valid direct transfer window to {moon.name}")
 
-    _, r_apo, arrival_ut, burn_ut = best
+    good = [c for c in candidates if c[0] <= good_enough_m]
+    if good:
+        best = min(good, key=lambda c: c[3])  # soonest burn_ut among the qualifying candidates
+    else:
+        best = min(candidates, key=lambda c: c[0])  # none good enough -- fall back to best accuracy
+    _, r_apo, arrival_ut, burn_ut, _ = best
     return {
         "burn_ut": burn_ut,
         "arrival_ut": arrival_ut,
@@ -172,7 +186,17 @@ def _plan_direct_transfer(client, vessel, job, parent, moon):
 
     if plan["burn_ut"] - sc.ut > 30:
         job.message = f"waiting for the right lap before the {moon.name} transfer burn"
-        sc.warp_to(plan["burn_ut"] - 20)
+        # sc.warp_to() blocks server-side until it reaches its target --
+        # for a long wait (confirmed live: one legitimate plan needed
+        # ~56 hours of game time) that meant job.check_abort() was never
+        # reached until the whole wait finished, making the job
+        # un-abortable for the entire duration. Warp in bounded chunks
+        # instead so abort actually gets checked along the way.
+        target = plan["burn_ut"] - 20
+        chunk = 3600 * 6  # up to 6 game-hours per warp_to call
+        while sc.ut < target - 30:
+            job.check_abort()
+            sc.warp_to(min(sc.ut + chunk, target))
         while sc.ut < plan["burn_ut"] - 5:
             job.check_abort()
             job.sleep(0.2)
