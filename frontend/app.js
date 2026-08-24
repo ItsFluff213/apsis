@@ -82,19 +82,23 @@ const mapLegendEl = document.getElementById("map-legend");
 // coordinates -- the actual depth/perspective comes from a real 3D camera
 // there now, not a flattening hack here.
 const SMA_SCALE = 170000000; // world-units per m, calibrated so Kerbin ~= 80 units
+// Moon radii use widening (not linear) steps so a planet with several
+// moons (Jool's five) doesn't bunch them into a solid blob -- each step
+// out is noticeably bigger than the last, same idea real orbital spacing
+// tends to follow anyway.
 const SYSTEM_TREE = {
   name: "Sun", radius: 0, angle: 0, topLevel: false, children: [
     { name: "Moho", radius: 40, angle: 10, topLevel: true },
-    { name: "Eve", radius: 60, angle: 60, topLevel: true, children: [{ name: "Gilly", radius: 12, angle: 0 }] },
+    { name: "Eve", radius: 60, angle: 60, topLevel: true, children: [{ name: "Gilly", radius: 15, angle: 0 }] },
     { name: "Kerbin", radius: 80, angle: 120, topLevel: true, children: [
-        { name: "Mun", radius: 12, angle: 0 }, { name: "Minmus", radius: 18, angle: 140 },
+        { name: "Mun", radius: 15, angle: 0 }, { name: "Minmus", radius: 24, angle: 140 },
     ] },
-    { name: "Duna", radius: 100, angle: 170, topLevel: true, children: [{ name: "Ike", radius: 12, angle: 0 }] },
+    { name: "Duna", radius: 100, angle: 170, topLevel: true, children: [{ name: "Ike", radius: 15, angle: 0 }] },
     { name: "Dres", radius: 118, angle: 220, topLevel: true },
     { name: "Jool", radius: 138, angle: 270, topLevel: true, children: [
-        { name: "Laythe", radius: 10, angle: 0 }, { name: "Vall", radius: 14, angle: 72 },
-        { name: "Tylo", radius: 18, angle: 144 }, { name: "Bop", radius: 22, angle: 216 },
-        { name: "Pol", radius: 26, angle: 288 },
+        { name: "Laythe", radius: 13, angle: 0 }, { name: "Vall", radius: 20, angle: 72 },
+        { name: "Tylo", radius: 28, angle: 144 }, { name: "Bop", radius: 37, angle: 216 },
+        { name: "Pol", radius: 47, angle: 288 },
     ] },
     { name: "Eeloo", radius: 155, angle: 320, topLevel: true },
   ],
@@ -172,7 +176,7 @@ function layoutSystem() {
       };
     }
     positions.set(node.name, {
-      x, y, isMoon: node.radius < 30 && node.radius > 0,
+      x, y, isMoon: !node.topLevel && node.name !== "Sun",
       originX, originY, orbitShape,
     });
     for (const child of node.children || []) place(child, x, y);

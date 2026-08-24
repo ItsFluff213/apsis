@@ -92,7 +92,7 @@ function init() {
 
   // Sun
   sunMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(6, 24, 24),
+    new THREE.SphereGeometry(7.5, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0xffe9a8 }),
   );
   scene.add(sunMesh);
@@ -203,7 +203,7 @@ function setBodies(positions) {
     if (name === "Sun") continue;
     let entry = bodyMeshes.get(name);
     if (!entry) {
-      const radius = pos.isMoon ? 1.4 : 2.6;
+      const radius = pos.isMoon ? 1.8 : 3.2;
       const color = BODY_COLORS[name] !== undefined ? BODY_COLORS[name] : DEFAULT_BODY_COLOR;
       const mesh = new THREE.Mesh(
         new THREE.SphereGeometry(radius, 20, 20),
@@ -329,7 +329,7 @@ function setVessels(vessels) {
       // point) where a plain sphere was just a dot -- radius 0.7, height
       // 2.2, nose pointing along +Y by default (Three.js cone convention).
       const mesh = new THREE.Mesh(
-        new THREE.ConeGeometry(0.7, 2.2, 12),
+        new THREE.ConeGeometry(0.9, 2.8, 12),
         new THREE.MeshBasicMaterial({ color: CATEGORY_COLORS[category] }),
       );
       const trajGeo = new THREE.BufferGeometry();
