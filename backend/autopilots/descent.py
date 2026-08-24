@@ -18,7 +18,17 @@ solver -- expect to land near a target, not exactly on it.
 
 import math
 
-from backend import geo
+from backend import geo, parts
+
+# Stock parachutes rip off above roughly 250 m/s at sea-level pressure.
+# Deploying below this is safe; the check is against dynamic pressure where
+# available, since the same speed is harmless in thin air high up.
+CHUTE_SAFE_SPEED_MS = 250.0
+CHUTE_SAFE_DYNAMIC_PRESSURE = 12_000.0  # Pa
+
+# Below this descent rate under canopy there is nothing for a landing burn
+# to improve on -- the chutes have already done the job.
+CHUTE_TERMINAL_DESCENT_MS = 12.0
 
 
 def _flight(vessel):
@@ -88,12 +98,182 @@ def _commit_to_burnup(vessel, job, max_burn_s=5):
     return True
 
 
-def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, final_hover_altitude=15):
+def _chutes_are_safe_to_deploy(vessel, flight):
+    """Whether deploying now would survive. Prefers dynamic pressure (the
+    thing that actually rips a canopy) over raw speed, since 250 m/s in the
+    upper atmosphere is harmless while the same speed low down is not."""
+    try:
+        if flight.dynamic_pressure > CHUTE_SAFE_DYNAMIC_PRESSURE:
+            return False
+        return True
+    except Exception:
+        return flight.speed <= CHUTE_SAFE_SPEED_MS
+
+
+def deploy_parachutes(vessel, job, flight):
+    """Deploy any parachutes that aren't already out. Returns True if this
+    call deployed at least one."""
+    deployed_any = False
+    for part in parts.get_parachutes(vessel):
+        try:
+            chute = part.parachute
+            if chute is None or chute.deployed:
+                continue
+            chute.deploy()
+            deployed_any = True
+        except Exception:
+            # Same kRPC null-reference quirk seen on decouplers -- skip the
+            # part rather than abandoning the whole deployment.
+            continue
+    if deployed_any:
+        job.message = "parachutes deployed"
+    return deployed_any
+
+
+def hold_retrograde_through_reentry(client, vessel, job, body):
+    """Keep the craft pointed retrograde while it is fast and deep enough
+    for heating to matter, so a heatshield actually faces the airflow.
+
+    This used to be an explicit scope gap -- the docs told you to point a
+    heatshield manually before commanding a return. It matters even without
+    a shield: a capsule tumbling through reentry presents an unpredictable
+    cross-section, which wrecks the descent guidance's assumptions as much
+    as it wrecks the craft.
+
+    Returns once the craft has slowed to where the landing guidance can
+    take over, or immediately on an airless body (nothing to reenter).
+    """
+    if not body.atmosphere_depth:
+        return
+
+    flight = _flight(vessel)
+    if flight.mean_altitude > body.atmosphere_depth or flight.speed < CHUTE_SAFE_SPEED_MS:
+        return  # not reentering, or already slow enough to skip the phase
+
+    ap = vessel.auto_pilot
+    control = vessel.control
+    control.throttle = 0.0
+    control.sas = False
+    ap.reference_frame = body.reference_frame
+    ap.engaged = True
+
+    has_shield = parts.get_heatshield(vessel) is not None
+    job.message = "reentry -- holding retrograde" + (" (heatshield forward)" if has_shield else "")
+
+    while True:
+        job.check_abort()
+        flight = _flight(vessel)
+        if flight.mean_altitude >= body.atmosphere_depth:
+            break  # skipped back out of the atmosphere
+        if flight.speed <= CHUTE_SAFE_SPEED_MS:
+            break  # through the worst of it
+        if flight.surface_altitude < 1000:
+            break  # out of time -- let the landing guidance have it
+        ap.target_direction = flight.retrograde
+        job.sleep(0.2)
+
+
+def _ride_chutes_down(client, vessel, job, body, retro_assist_speed=CHUTE_TERMINAL_DESCENT_MS):
+    """Wait out a parachute descent to touchdown.
+
+    Mostly this just watches. The one active part is the fallback at the
+    bottom: if the craft is still coming down harder than chutes alone can
+    handle (too heavy for its canopy area, or thin atmosphere like Duna's
+    where chutes help but don't fully arrest), a short retrograde burn just
+    above the ground takes the last of it off. That combination -- chutes
+    for the bulk, engine for the final margin -- is far cheaper than
+    powering the whole descent, and is how most real capsules with
+    retro-rockets work.
+    """
+    control = vessel.control
+    ap = vessel.auto_pilot
+    ap.reference_frame = body.reference_frame
+    ap.engaged = True
+    job.message = "descending under parachutes"
+
+    try:
+        while True:
+            job.check_abort()
+            flight = _flight(vessel)
+            descent_rate = -flight.vertical_speed
+
+            if flight.surface_altitude <= 0.5 and abs(flight.vertical_speed) < 0.5:
+                break
+            if vessel.situation.name in ("landed", "splashed"):
+                break
+
+            # Keep pointed retrograde so the craft stays stable under
+            # canopy rather than swinging.
+            try:
+                ap.target_direction = flight.retrograde
+            except Exception:
+                pass
+
+            # Retro-assist only in the last stretch, and only if actually
+            # needed -- burning higher up just fights the canopy.
+            if (flight.surface_altitude < 200 and descent_rate > retro_assist_speed
+                    and vessel.available_thrust > 0.1):
+                job.message = "parachute descent -- retro-assist for touchdown"
+                control.throttle = min(1.0, (descent_rate - retro_assist_speed) / 10.0)
+            else:
+                control.throttle = 0.0
+
+            job.sleep(0.2)
+    finally:
+        control.throttle = 0.0
+        ap.engaged = False
+        control.sas = True
+
+    job.message = "landed under parachutes"
+
+
+def _parachute_descent(client, vessel, job, body):
+    """Full chute-only descent for a craft with no usable propellant: wait
+    until the air is thick enough to deploy safely, then ride it down."""
+    ap = vessel.auto_pilot
+    ap.reference_frame = body.reference_frame
+    ap.engaged = True
+    vessel.control.throttle = 0.0
+
+    job.message = "waiting for safe parachute deployment speed"
+    while True:
+        job.check_abort()
+        flight = _flight(vessel)
+        if vessel.situation.name in ("landed", "splashed"):
+            job.message = "landed"
+            return
+        if _chutes_are_safe_to_deploy(vessel, flight) and flight.mean_altitude < body.atmosphere_depth:
+            break
+        try:
+            ap.target_direction = flight.retrograde
+        except Exception:
+            pass
+        job.sleep(0.5)
+
+    deploy_parachutes(vessel, job, _flight(vessel))
+    _ride_chutes_down(client, vessel, job, body)
+
+
+def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, final_hover_altitude=15,
+                         use_parachutes=True):
     control = vessel.control
     ap = vessel.auto_pilot
     body = vessel.orbit.body
 
+    # Survive the heating first, if there is any -- no point planning a
+    # touchdown for a craft that arrives as debris.
+    hold_retrograde_through_reentry(client, vessel, job, body)
+
+    # Chutes change the feasibility question completely: a craft with no
+    # propellant left is doomed under power but perfectly fine under
+    # canopy, so check for them before declaring a landing impossible.
+    has_chutes = use_parachutes and bool(parts.get_parachutes(vessel))
+
     feasible, available_dv, required_dv = check_landing_feasible(vessel)
+    if not feasible and has_chutes and body.atmosphere_depth:
+        job.message = "not enough delta-v to land under power -- descending on parachutes"
+        _parachute_descent(client, vessel, job, body)
+        return
     if not feasible:
         job.message = (
             f"not enough delta-v for a safe landing ({available_dv:.0f} m/s available, "
@@ -122,6 +302,16 @@ def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, 
             flight = _flight(vessel)
             altitude = flight.surface_altitude
             vertical_speed = -flight.vertical_speed  # positive = descending
+
+            # Chutes, if the craft has them and the air is thick enough for
+            # them to bite. Deploying during the coast (rather than after a
+            # burn) is the whole point: every m/s the canopy sheds is a m/s
+            # the engine doesn't have to pay for.
+            if has_chutes and body.atmosphere_depth and _chutes_are_safe_to_deploy(vessel, flight):
+                if deploy_parachutes(vessel, job, flight):
+                    control.throttle = 0.0
+                    _ride_chutes_down(client, vessel, job, body)
+                    return
 
             if altitude <= final_hover_altitude:
                 break

@@ -8,6 +8,8 @@ Tag a part in the VAB/SPH (right-click a part > Tag) using a
     dock.front          - the docking port used to dock nose-first
     dock.cargo          - a docking port used for cargo/fuel transfer
     antenna.comm        - a comms antenna
+    heatshield.main     - the heatshield to keep facing the airflow on reentry
+    chute.main          - a parachute (chute.drogue for a drogue chute)
 
 Untagged craft fall back to best-effort auto-detection (bottom-most engine,
 outermost docking port, etc.) so the system is still usable without tagging,
@@ -124,6 +126,39 @@ def get_decouplers_by_stage(vessel):
     for decoupler in vessel.parts.decouplers:
         by_stage.setdefault(decoupler.part.stage, []).append(decoupler.part)
     return by_stage
+
+
+def get_parachutes(vessel):
+    """Parachute parts, tagged `chute.*` first, else every parachute kRPC
+    can find on the craft."""
+    tagged = get_tagged_parts(vessel).get("chute", {})
+    if tagged:
+        return list(tagged.values())
+    return [p.part for p in vessel.parts.parachutes]
+
+
+def get_heatshield(vessel):
+    """The craft's heatshield, if it has one.
+
+    Tagged `heatshield.*` first. The fallback matches on part name because
+    kRPC exposes no "is a heatshield" predicate the way it does for engines
+    or decouplers -- ablator is a resource, not a part type. Checking for
+    that resource is the more robust half of the test, with the name match
+    as a backstop for shields that have already burned through their
+    ablator (still structurally a shield, still worth orienting).
+    """
+    tagged = get_tagged_parts(vessel).get("heatshield", {})
+    if tagged:
+        return next(iter(tagged.values()))
+    for part in vessel.parts.all:
+        try:
+            if "Ablator" in part.resources.names:
+                return part
+            if "heatshield" in part.name.lower():
+                return part
+        except Exception:
+            continue
+    return None
 
 
 def get_docking_ports(vessel):

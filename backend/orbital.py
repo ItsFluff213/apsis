@@ -153,6 +153,62 @@ def ejection_angle(mu_body, r_park, v_infinity):
     return math.acos(-1.0 / eccentricity)
 
 
+# --- Kepler time-of-flight ----------------------------------------------
+# Needed to answer "how long until the vessel gets from here to there on
+# this orbit", which is what targeted deorbiting depends on: a deorbit burn
+# is aimed by choosing *where* in the orbit to fire it, and that requires
+# knowing how long the fall to the ground will take so the body's rotation
+# underneath can be accounted for.
+
+def true_anomaly_at_radius(a, e, r):
+    """True anomaly (rad, in [0, pi]) at which an orbit of semi-major axis
+    `a` and eccentricity `e` passes through radius `r`.
+
+    Returns the outbound (post-periapsis) solution; the inbound one is its
+    negative, since the conic is symmetric about the apsis line. Raises
+    ValueError if the orbit never reaches that radius at all.
+    """
+    if e < 0:
+        raise ValueError("eccentricity cannot be negative")
+    p = a * (1 - e * e)  # semi-latus rectum
+    if abs(e) < 1e-12:
+        if abs(r - a) > 1e-6 * max(a, 1.0):
+            raise ValueError("circular orbit never reaches that radius")
+        return 0.0
+    cos_nu = (p / r - 1.0) / e
+    if cos_nu > 1.0 or cos_nu < -1.0:
+        raise ValueError(f"orbit does not reach radius {r}")
+    return math.acos(cos_nu)
+
+
+def eccentric_from_true_anomaly(e, nu):
+    """Eccentric anomaly from true anomaly (elliptical orbits only)."""
+    return math.atan2(math.sqrt(max(1 - e * e, 0.0)) * math.sin(nu), e + math.cos(nu))
+
+
+def mean_from_eccentric_anomaly(e, eccentric):
+    """Kepler's equation, in the easy direction."""
+    return eccentric - e * math.sin(eccentric)
+
+
+def time_from_periapsis(mu, a, e, nu):
+    """Time (s) since periapsis passage at true anomaly `nu`, for an
+    elliptical orbit. Always in [0, period)."""
+    eccentric = eccentric_from_true_anomaly(e, nu)
+    mean = mean_from_eccentric_anomaly(e, eccentric)
+    n = math.sqrt(mu / a ** 3)  # mean motion
+    return (mean / n) % period_for_sma(mu, a)
+
+
+def time_between_true_anomalies(mu, a, e, nu_from, nu_to):
+    """Flight time (s) going forward along the orbit from `nu_from` to
+    `nu_to`. Wraps through periapsis if needed, so the result is always
+    non-negative."""
+    t_from = time_from_periapsis(mu, a, e, nu_from)
+    t_to = time_from_periapsis(mu, a, e, nu_to)
+    return (t_to - t_from) % period_for_sma(mu, a)
+
+
 def sphere_of_influence(a, mass_body, mass_parent):
     """Radius of a body's sphere of influence. kRPC exposes this directly
     for real bodies; this exists for tests and sanity checks."""

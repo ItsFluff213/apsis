@@ -4,10 +4,13 @@ descent for landing.
 
 Meant to be run on a spent stage right after it separates during ascent
 (kRPC lists a separated stage as its own vessel, so it can be targeted
-independently). This does not handle heatshield orientation during
-reentry -- for craft that need one, point it retrograde manually or via a
-tagged part before commanding the return; this is a scope limitation, not
-an oversight.
+independently).
+
+Reentry orientation is handled now: the shared descent guidance holds the
+craft retrograde through the heating phase (see
+descent.hold_retrograde_through_reentry), so a tagged `heatshield.*` part
+faces the airflow without anyone having to point it by hand first. That
+used to be an explicit scope limitation documented here.
 """
 
 from backend import geo

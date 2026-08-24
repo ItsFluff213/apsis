@@ -185,6 +185,61 @@ class TestEjectionEdgeCases:
         assert 0 < angle <= math.pi
 
 
+class TestKeplerTimeOfFlight:
+    def test_half_period_from_periapsis_to_apoapsis(self):
+        a, e = KERBIN_RADIUS + 300_000, 0.3
+        tof = orbital.time_between_true_anomalies(MU_KERBIN, a, e, 0.0, math.pi)
+        assert tof == pytest.approx(orbital.period_for_sma(MU_KERBIN, a) / 2)
+
+    def test_full_lap_is_one_period(self):
+        a, e = KERBIN_RADIUS + 300_000, 0.3
+        period = orbital.period_for_sma(MU_KERBIN, a)
+        # Going from nu round to nu again wraps to a full period, not zero.
+        tof = orbital.time_between_true_anomalies(MU_KERBIN, a, e, 1.0, 1.0 - 1e-9)
+        assert tof == pytest.approx(period, rel=1e-6)
+
+    def test_time_of_flight_is_never_negative(self):
+        a, e = KERBIN_RADIUS + 300_000, 0.4
+        # Backwards in true anomaly must wrap forward through periapsis.
+        tof = orbital.time_between_true_anomalies(MU_KERBIN, a, e, 3.0, 1.0)
+        assert tof > 0
+
+    def test_ellipse_spends_longer_near_apoapsis(self):
+        """Kepler's second law: equal areas in equal times, so the same
+        angular sweep takes longer out at apoapsis than down at periapsis.
+        A sign error in the eccentric-anomaly conversion inverts this."""
+        a, e = KERBIN_RADIUS + 500_000, 0.5
+        near_peri = orbital.time_between_true_anomalies(MU_KERBIN, a, e, -0.4, 0.4)
+        near_apo = orbital.time_between_true_anomalies(MU_KERBIN, a, e, math.pi - 0.4, math.pi + 0.4)
+        assert near_apo > near_peri
+
+    def test_circular_orbit_sweeps_uniformly(self):
+        a = KERBIN_RADIUS + 100_000
+        period = orbital.period_for_sma(MU_KERBIN, a)
+        quarter = orbital.time_between_true_anomalies(MU_KERBIN, a, 0.0, 0.0, math.pi / 2)
+        assert quarter == pytest.approx(period / 4)
+
+    def test_true_anomaly_at_radius_recovers_apsides(self):
+        a, e = KERBIN_RADIUS + 400_000, 0.25
+        r_peri, r_apo = a * (1 - e), a * (1 + e)
+        assert orbital.true_anomaly_at_radius(a, e, r_peri) == pytest.approx(0.0, abs=1e-6)
+        assert orbital.true_anomaly_at_radius(a, e, r_apo) == pytest.approx(math.pi, abs=1e-6)
+
+    def test_true_anomaly_at_unreachable_radius_raises(self):
+        a, e = KERBIN_RADIUS + 400_000, 0.25
+        with pytest.raises(ValueError):
+            orbital.true_anomaly_at_radius(a, e, a * (1 + e) * 2)
+
+    def test_deorbit_geometry_impact_before_periapsis(self):
+        """The case targeted deorbiting actually relies on: periapsis is
+        driven below the surface, so the vessel meets the ground at some
+        true anomaly short of it."""
+        a, e = 3_000_000.0, 0.85
+        assert a * (1 - e) < KERBIN_RADIUS, "test setup: periapsis must be underground"
+        nu_impact = orbital.true_anomaly_at_radius(a, e, KERBIN_RADIUS)
+        assert 0 < nu_impact < math.pi
+
+
 class TestSphereOfInfluence:
     def test_mun_soi_matches_stock(self):
         """Stock Mun SOI is 2,429,559 m."""
