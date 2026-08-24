@@ -97,21 +97,41 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
     moon_angle_now = _angle_of(moon.position(frame))
     moon_rate = 2 * math.pi / moon.orbit.period
 
-    burn_ut = sc.ut + o.time_to_periapsis
+    first_burn_ut = sc.ut + o.time_to_periapsis
+    parking_period = o.period
     r_peri = parent.equatorial_radius + o.periapsis_altitude
-
-    # Nominal Hohmann half-period, used only to pick the most sensible
-    # candidate arrival time among the several that satisfy the angle
-    # match (one every lunar orbit) -- prefer whichever is closest to a
-    # normal transfer duration rather than a wildly fast or slow one.
     r2 = moon.orbit.semi_major_axis
-    a_nominal = (r_peri + r2) / 2.0
-    nominal_transfer_time = math.pi * math.sqrt(a_nominal ** 3 / mu)
 
+    # There are two independent knobs here, not one. Which arrival time to
+    # target (moon at target_angle) only recurs once per full moon orbit --
+    # a coarse knob. But WHEN to actually burn doesn't have to be the very
+    # next periapsis: waiting a few extra laps of the current parking orbit
+    # before burning is free (pure coasting) and shifts the transfer time
+    # in much finer steps (one parking-orbit period at a time, typically
+    # tiny compared to the moon's own period). Using only the coarse knob
+    # (as an earlier version of this function did) picks whichever
+    # once-per-moon-orbit arrival is "closest" to a normal transfer
+    # duration, but "closest" among options spaced a full moon-orbit apart
+    # can still leave the resulting apoapsis millions of meters away from
+    # the moon's actual orbital radius -- confirmed live, a transfer aimed
+    # for a 19,300 km apoapsis when the moon only orbits at 12,000 km,
+    # missing it entirely despite hitting the angle exactly on time. Using
+    # both knobs together, for each coarse arrival-time candidate, picks
+    # the number of extra parking-orbit laps that makes the resulting
+    # apoapsis land as close as possible to the moon's real orbital radius.
     best = None
-    for k in range(6):
+    for k in range(8):
         angle_needed = (target_angle - moon_angle_now) % (2 * math.pi) + k * 2 * math.pi
         arrival_ut = sc.ut + angle_needed / moon_rate
+
+        a_ideal = (r_peri + r2) / 2.0
+        ideal_transfer_time = math.pi * math.sqrt(a_ideal ** 3 / mu)
+        desired_burn_ut = arrival_ut - ideal_transfer_time
+        if desired_burn_ut < first_burn_ut:
+            continue  # would mean burning before the next periapsis even occurs
+
+        laps = round((desired_burn_ut - first_burn_ut) / parking_period)
+        burn_ut = first_burn_ut + laps * parking_period
         transfer_time = arrival_ut - burn_ut
         if transfer_time <= 0:
             continue
@@ -120,14 +140,14 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
         r_apo = 2 * a2 - r_peri
         if r_apo <= r_peri:
             continue  # degenerate for this k -- not a valid outward transfer
-        score = abs(transfer_time - nominal_transfer_time)
+        score = abs(r_apo - r2)  # how far the resulting apoapsis misses the moon's real orbit
         if best is None or score < best[0]:
-            best = (score, r_apo, arrival_ut)
+            best = (score, r_apo, arrival_ut, burn_ut)
 
     if best is None:
         raise ValueError(f"could not find a valid direct transfer window to {moon.name}")
 
-    _, r_apo, arrival_ut = best
+    _, r_apo, arrival_ut, burn_ut = best
     return {
         "burn_ut": burn_ut,
         "arrival_ut": arrival_ut,
@@ -140,8 +160,23 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
 
 def _plan_direct_transfer(client, vessel, job, parent, moon):
     """Builds and returns the actual maneuver node for the direct transfer
-    computed by compute_direct_transfer_plan (see there for the math)."""
+    computed by compute_direct_transfer_plan (see there for the math).
+
+    The plan's burn_ut can be several parking-orbit laps in the future, not
+    necessarily the very next periapsis -- change_apoapsis_node always
+    targets "the next periapsis from right now", so if the plan calls for
+    waiting, warp there first so that the next periapsis actually is the
+    intended one by the time the node gets created."""
+    sc = client.space_center
     plan = compute_direct_transfer_plan(client, vessel, parent, moon)
+
+    if plan["burn_ut"] - sc.ut > 30:
+        job.message = f"waiting for the right lap before the {moon.name} transfer burn"
+        sc.warp_to(plan["burn_ut"] - 20)
+        while sc.ut < plan["burn_ut"] - 5:
+            job.check_abort()
+            job.sleep(0.2)
+
     job.message = f"burning for direct {moon.name} intercept"
     return maneuver.change_apoapsis_node(client, vessel, plan["target_apoapsis_m"], burn_at="periapsis")
 
