@@ -208,9 +208,23 @@ def _plan_direct_transfer(client, vessel, job, parent, moon):
     # where far faster warp is available -- then recompute the plan, since
     # the parking orbit's period (and therefore the lap-based timing
     # search) changed.
-    if plan["burn_ut"] - sc.ut > 600 and vessel.orbit.apoapsis_altitude < 500_000:
+    wait_s = plan["burn_ut"] - sc.ut
+    if wait_s > 600 and vessel.orbit.apoapsis_altitude < 500_000:
+        # Scale how high to raise with how long the wait actually is --
+        # a bigger wait justifies paying for a bigger (still cheap from
+        # LKO) raise to unlock a faster warp tier; a short wait doesn't
+        # need it. A higher apoapsis also means a longer parking-orbit
+        # period, which coarsens the lap-based timing search below, so
+        # this isn't "raise as high as possible" -- just as high as the
+        # wait length actually justifies.
+        if wait_s > 36_000:
+            raise_target = 5_000_000
+        elif wait_s > 3_600:
+            raise_target = 2_000_000
+        else:
+            raise_target = 800_000
         job.message = f"raising orbit for faster warp before the {moon.name} transfer window"
-        raise_node = maneuver.change_apoapsis_node(client, vessel, 800_000, burn_at="periapsis")
+        raise_node = maneuver.change_apoapsis_node(client, vessel, raise_target, burn_at="periapsis")
         maneuver.execute_node(client, vessel, job, raise_node)
         plan = compute_direct_transfer_plan(client, vessel, parent, moon)
 
@@ -275,11 +289,36 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
     maneuver.execute_node(client, vessel, job, node)
 
     job.message = f"coasting to {moon.name}"
-    if vessel.orbit.time_to_apoapsis > 30:
-        sc.warp_to(sc.ut + vessel.orbit.time_to_apoapsis - 20)
+    # Warp in bounded chunks, watching actual live distance to the moon,
+    # instead of one single warp_to based on the Kerbin-orbit apoapsis
+    # time. That estimate is only a proxy for when the real encounter
+    # happens -- the actual closest approach can occur meaningfully
+    # earlier or later -- and a single big warp can fly straight through
+    # SOI entry, closest approach (including a surface impact), and exit
+    # before the code ever gets a chance to check anything. Confirmed
+    # live: this destroyed a real test vessel. Stop warping well outside
+    # the moon's SOI and fall back to fine real-time polling for the
+    # final approach, so the safety check below has an actual chance to
+    # run before arrival, not just before an already-passed encounter.
+    frame = parent.non_rotating_reference_frame
+
+    def _distance_to_moon():
+        vp = vessel.position(frame)
+        mp = moon.position(frame)
+        return math.sqrt(sum((a - b) ** 2 for a, b in zip(vp, mp)))
+
+    safety_radius = moon.sphere_of_influence * 3
+    while vessel.orbit.body != moon and _distance_to_moon() > safety_radius:
+        job.check_abort()
+        remaining = vessel.orbit.time_to_apoapsis
+        if remaining > 60:
+            sc.warp_to(sc.ut + min(remaining - 30, 300))
+        else:
+            job.sleep(1)
+
     while vessel.orbit.body != moon:
         job.check_abort()
-        job.sleep(1)
+        job.sleep(0.2)
 
     # Safety check, before anything else: the phase-angle transfer only
     # controls WHEN the vessel arrives relative to the moon, not the exact
