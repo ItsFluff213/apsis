@@ -1,3 +1,6 @@
 krpc==0.6.0
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
+
+# Dev only: runs the pure-math and migration tests in tests/ (no KSP needed).
+pytest>=7.0

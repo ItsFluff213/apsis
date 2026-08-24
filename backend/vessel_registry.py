@@ -18,11 +18,39 @@ dashboard has no way to set this itself, matching how part roles work.
 """
 
 import logging
+import time
 
 from backend import db, parts
 from backend.krpc_client import NotConnected
 
 logger = logging.getLogger("vessel_registry")
+
+# Some conditions are transient-but-persistent: sitting in the VAB or SPH
+# makes flight-only kRPC procedures unavailable for as long as you stay
+# there, and every vessel fails the same way on every telemetry tick.
+# Logged naively that is several warnings per second, each carrying a full
+# kRPC server stack trace, for as long as the editor is open -- which
+# buries anything real. These are throttled to one line per distinct
+# problem per interval.
+_LOG_THROTTLE_S = 30.0
+_last_logged = {}
+
+
+def _log_throttled(key, message, *args):
+    now = time.monotonic()
+    previous = _last_logged.get(key)
+    if previous is not None and now - previous < _LOG_THROTTLE_S:
+        logger.debug(message, *args)
+        return
+    _last_logged[key] = now
+    logger.warning(message, *args)
+
+
+def _short_reason(exc):
+    """First line of an exception message. kRPC appends a multi-line server
+    stack trace to its errors, which is noise in a log line -- the full text
+    is still available at debug level."""
+    return str(exc).split("\n", 1)[0].strip()
 
 # KSP's own vessel.type values (VesselType enum, .name is lowercase, e.g.
 # "relay"), mapped down to our simpler type set. Used only as a fallback
@@ -152,7 +180,8 @@ class VesselRegistry:
             # (e.g. "No such vessel <guid>", or a scene-restricted
             # procedure). Skip this tick rather than killing the whole
             # telemetry stream -- the next tick will have a fresh list.
-            logger.warning("list_vessels: transient error, skipping this tick: %s", exc)
+            reason = _short_reason(exc)
+            _log_throttled(f"list:{reason}", "list_vessels: skipping tick -- %s", reason)
             return []
 
         rows = db.all_rows()
@@ -172,7 +201,11 @@ class VesselRegistry:
                     "roles": parts.get_role_summary(vessel),
                 }
             except Exception as exc:  # vessel was destroyed between listing and reading it
-                logger.warning("list_vessels: skipping vessel %s, went stale: %s", key, exc)
+                reason = _short_reason(exc)
+                _log_throttled(
+                    f"vessel:{key}:{reason}",
+                    "list_vessels: skipping vessel %s -- %s", key, reason,
+                )
                 continue
             if include_telemetry:
                 try:
