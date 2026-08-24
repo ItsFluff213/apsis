@@ -122,12 +122,20 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
     #
     # Among candidates that are all "good enough" (comfortably inside the
     # moon's own sphere of influence, not just closest in the abstract),
-    # prefer whichever needs the fewest extra laps -- i.e. the soonest
-    # burn. The very best-accuracy candidate can require waiting for a
-    # specific alignment that's a long real-world wait away (confirmed
-    # live: one legitimate candidate needed ~56 hours of game time, ~68
-    # real minutes even at 50x warp) when a slightly-less-perfect-but-
-    # still-safely-inside-the-SOI candidate was available much sooner.
+    # prefer whichever is both fast AND cheap -- not just whichever needs
+    # the fewest extra laps. The very best-accuracy candidate can require
+    # waiting for a specific alignment that's a long real-world wait away
+    # (confirmed live: one legitimate candidate needed ~56 hours of game
+    # time, ~68 real minutes even at 50x warp) when a slightly-less-
+    # perfect-but-still-safely-inside-the-SOI candidate was available much
+    # sooner -- and different candidates can also cost noticeably
+    # different amounts of dv for the departure burn itself, since they
+    # target different apoapsis values. Score each qualifying candidate on
+    # both (wait time, burn dv), normalized against the best of each among
+    # the pool so neither unit dominates by scale, and pick the lowest
+    # combined score.
+    a1 = o.semi_major_axis
+    v1 = maneuver.vis_viva_speed(mu, r_peri, a1)
     good_enough_m = moon.sphere_of_influence * 0.3
     candidates = []
     for k in range(8):
@@ -151,17 +159,23 @@ def compute_direct_transfer_plan(client, vessel, parent, moon):
         if r_apo <= r_peri:
             continue  # degenerate for this k -- not a valid outward transfer
         miss = abs(r_apo - r2)  # how far the resulting apoapsis misses the moon's real orbit
-        candidates.append((miss, r_apo, arrival_ut, burn_ut, laps))
+        v2 = maneuver.vis_viva_speed(mu, r_peri, a2)
+        dv = abs(v2 - v1)
+        wait = burn_ut - sc.ut
+        candidates.append((miss, r_apo, arrival_ut, burn_ut, dv, wait))
 
     if not candidates:
         raise ValueError(f"could not find a valid direct transfer window to {moon.name}")
 
     good = [c for c in candidates if c[0] <= good_enough_m]
+    pool = good if good else candidates
+    max_wait = max(c[5] for c in pool) or 1.0
+    max_dv = max(c[4] for c in pool) or 1.0
     if good:
-        best = min(good, key=lambda c: c[3])  # soonest burn_ut among the qualifying candidates
+        best = min(pool, key=lambda c: c[5] / max_wait + c[4] / max_dv)
     else:
-        best = min(candidates, key=lambda c: c[0])  # none good enough -- fall back to best accuracy
-    _, r_apo, arrival_ut, burn_ut, _ = best
+        best = min(pool, key=lambda c: c[0])  # none good enough -- fall back to best accuracy
+    _, r_apo, arrival_ut, burn_ut, _, _ = best
     return {
         "burn_ut": burn_ut,
         "arrival_ut": arrival_ut,
@@ -183,6 +197,22 @@ def _plan_direct_transfer(client, vessel, job, parent, moon):
     intended one by the time the node gets created."""
     sc = client.space_center
     plan = compute_direct_transfer_plan(client, vessel, parent, moon)
+
+    # A long wait spent entirely in a low, near-circular parking orbit is
+    # slow in real time even at max warp -- KSP throttles rails-warp speed
+    # by current altitude, and a flat ~90km orbit never climbs high enough
+    # to unlock the faster tiers, confirmed live capping a wait at 50x the
+    # whole way through. Raising apoapsis first (leaving periapsis alone,
+    # so it doesn't change what change_apoapsis_node needs for the real
+    # transfer burn later) means most of the wait is spent much higher up,
+    # where far faster warp is available -- then recompute the plan, since
+    # the parking orbit's period (and therefore the lap-based timing
+    # search) changed.
+    if plan["burn_ut"] - sc.ut > 600 and vessel.orbit.apoapsis_altitude < 500_000:
+        job.message = f"raising orbit for faster warp before the {moon.name} transfer window"
+        raise_node = maneuver.change_apoapsis_node(client, vessel, 800_000, burn_at="periapsis")
+        maneuver.execute_node(client, vessel, job, raise_node)
+        plan = compute_direct_transfer_plan(client, vessel, parent, moon)
 
     if plan["burn_ut"] - sc.ut > 30:
         job.message = f"waiting for the right lap before the {moon.name} transfer burn"
