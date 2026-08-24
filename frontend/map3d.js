@@ -284,6 +284,22 @@ function vesselLocalPosition(telemetry) {
   return tiltedEllipsePoint(shape, trueAnomalyRad);
 }
 
+// Direction of travel at the vessel's current point on its (schematic)
+// orbit -- the tangent to the ellipse at its current true anomaly, found
+// via a small finite-difference step in the direction of increasing true
+// anomaly (the standard convention for prograde motion, same one the rest
+// of this file already assumes when sweeping 0->2pi for the trajectory
+// line). This is what actually orients the cone's tip along the real
+// orbital motion instead of a fixed default direction.
+function vesselHeadingDirection(telemetry) {
+  const shape = vesselOrbitShape(telemetry);
+  const trueAnomalyRad = ((telemetry.true_anomaly_deg || 0) * Math.PI) / 180;
+  const eps = 0.01;
+  const p1 = tiltedEllipsePoint(shape, trueAnomalyRad);
+  const p2 = tiltedEllipsePoint(shape, trueAnomalyRad + eps);
+  return new THREE.Vector3(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z).normalize();
+}
+
 function vesselTrajectoryPoints(telemetry) {
   const shape = vesselOrbitShape(telemetry);
   const segments = 96;
@@ -309,8 +325,11 @@ function setVessels(vessels) {
     let entry = vesselIcons.get(vessel.id);
     if (!entry) {
       const category = CATEGORY_COLORS[vessel.type] !== undefined ? vessel.type : "unknown";
+      // A cone reads as "a craft" at a glance (and shows heading via its
+      // point) where a plain sphere was just a dot -- radius 0.7, height
+      // 2.2, nose pointing along +Y by default (Three.js cone convention).
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(0.9, 8, 8),
+        new THREE.ConeGeometry(0.7, 2.2, 12),
         new THREE.MeshBasicMaterial({ color: CATEGORY_COLORS[category] }),
       );
       const trajGeo = new THREE.BufferGeometry();
@@ -333,6 +352,10 @@ function setVessels(vessels) {
     const local = vesselLocalPosition(t);
     entry.mesh.position.set(bodyPos.x + local.x, local.y, bodyPos.z + local.z);
     entry.mesh.scale.setScalar(vessel.is_active ? 1.6 : 1.0);
+    // Point the cone's tip (ConeGeometry's default +Y axis) along the
+    // vessel's actual direction of travel instead of a fixed orientation.
+    const heading = vesselHeadingDirection(t);
+    entry.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), heading);
 
     // Rebuild the trajectory line only when the orbit shape actually
     // changed (not every tick -- true anomaly alone changing doesn't
@@ -358,5 +381,42 @@ function setVessels(vessels) {
   }
 }
 
-window.Map3D = { init, setBodies, setVessels, resetView };
+let transferPreview = null; // {line, marker}
+
+// points: array of {x,y,z} relative to parentBodyName's current position.
+// arrivalMarker: {x,y,z}, same relative frame -- where the target moon is
+// predicted to be when the craft arrives (should sit right at the ellipse's
+// far end if the underlying math is correct, which is the whole point of
+// showing this before committing to the actual burn).
+function showTransferPreview(parentBodyName, points, arrivalMarker) {
+  clearTransferPreview();
+  const bodyEntry = bodyMeshes.get(parentBodyName);
+  const origin = bodyEntry ? bodyEntry.mesh.position : new THREE.Vector3(0, 0, 0);
+
+  const geo = new THREE.BufferGeometry().setFromPoints(
+    points.map(p => new THREE.Vector3(p.x, p.y, p.z)),
+  );
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }));
+  line.position.copy(origin);
+  scene.add(line);
+
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(1.3, 12, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }),
+  );
+  marker.position.set(origin.x + arrivalMarker.x, origin.y + arrivalMarker.y, origin.z + arrivalMarker.z);
+  scene.add(marker);
+
+  transferPreview = { line, marker };
+}
+
+function clearTransferPreview() {
+  if (!transferPreview) return;
+  scene.remove(transferPreview.line);
+  scene.remove(transferPreview.marker);
+  transferPreview.line.geometry.dispose();
+  transferPreview = null;
+}
+
+window.Map3D = { init, setBodies, setVessels, resetView, showTransferPreview, clearTransferPreview };
 init();
