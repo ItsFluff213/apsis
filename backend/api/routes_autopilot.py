@@ -11,7 +11,7 @@ import math
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.autopilots import ascent, booster_return, landing, moon_transfer, planet_transfer
+from backend.autopilots import ascent, booster_return, docking, landing, moon_transfer, planet_transfer
 from backend.krpc_client import NotConnected
 
 router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
@@ -38,6 +38,18 @@ class PlanetTransferRequest(BaseModel):
     target_body_name: str
     target_periapsis_m: float
     target_inclination_deg: float | None = None
+
+
+class DockingRequest(BaseModel):
+    target_vessel_id: str
+    own_port_tag: str | None = None
+    target_port_tag: str | None = None
+
+
+class ResourceTransferRequest(BaseModel):
+    resource_name: str
+    amount: float | None = None  # None means "as much as will move"
+    to_target: bool = True  # True pushes out of this craft, False pulls in
 
 
 def build_router(client, registry, jobs):
@@ -110,6 +122,32 @@ def build_router(client, registry, jobs):
                 target_body_name=body.target_body_name,
                 target_periapsis_m=body.target_periapsis_m,
                 target_inclination_deg=body.target_inclination_deg,
+            ),
+            body.model_dump(),
+        )
+
+    @router.post("/{vessel_id}/dock")
+    def start_docking(vessel_id: str, body: DockingRequest):
+        return _start(
+            vessel_id, "docking",
+            lambda job, vessel: docking.run_docking(
+                client, registry, vessel, job,
+                target_vessel_id=body.target_vessel_id,
+                own_port_tag=body.own_port_tag,
+                target_port_tag=body.target_port_tag,
+            ),
+            body.model_dump(),
+        )
+
+    @router.post("/{vessel_id}/transfer-resource")
+    def start_resource_transfer(vessel_id: str, body: ResourceTransferRequest):
+        return _start(
+            vessel_id, "resource-transfer",
+            lambda job, vessel: docking.run_resource_transfer(
+                client, vessel, job,
+                resource_name=body.resource_name,
+                amount=body.amount,
+                to_target=body.to_target,
             ),
             body.model_dump(),
         )
