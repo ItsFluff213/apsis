@@ -1,12 +1,12 @@
 """Transfer from a parking orbit to one of the same parent body's own moons
 (e.g. Kerbin -> Mun or Minmus) -- a patched-conic transfer computed and
-executed entirely in-house, no external planner needed. This is a
-fundamentally different (and much simpler) problem than the interplanetary
-case in backend/interplanetary.py: it's a single-parent phase-angle
-transfer, not a multi-gravity-assist search, which is exactly why
-KSP-MGA-Planner refuses it ("origin and destination must orbit the same
-body" -- Mun orbits Kerbin, not the Sun, so it's out of that tool's scope
-entirely).
+executed entirely in-house.
+
+Simpler than the planet-to-planet case in planet_transfer.py: the vessel
+never leaves its parent body's sphere of influence, it just raises apoapsis
+until the moon's gravity catches it. That means a prograde burn at any
+periapsis works, and there is no ejection angle to solve for -- only *when*
+to burn, not *where*.
 
 Sequence: compute (in closed form, see _plan_direct_transfer) the single
 burn -- timing and size -- that sends the vessel directly toward wherever
@@ -23,38 +23,18 @@ match followed by hoping the moon's gravity sorts out the rest.
 
 import math
 
-from backend.autopilots import maneuver
+from backend import orbital
+from backend.autopilots import arrival, maneuver
 
-
-def _angle_of(position):
-    """Angle (rad) of a position vector projected onto the parent's
-    equatorial-ish plane (x/z, per kRPC's non_rotating_reference_frame
-    convention) -- consistent with the same planar simplification the rest
-    of this project's phase/plane-change math already uses."""
-    x, _, z = position
-    return math.atan2(z, x)
-
-
-def _cross(a, b):
-    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
-
-
-def _dot(a, b):
-    return sum(x * y for x, y in zip(a, b))
-
-
-def _norm(a):
-    m = math.sqrt(sum(c * c for c in a)) or 1.0
-    return tuple(c / m for c in a)
-
-
-def _rotate_about_axis(vec, axis, angle):
-    """Rodrigues' rotation formula."""
-    axis = _norm(axis)
-    cos_a, sin_a = math.cos(angle), math.sin(angle)
-    cross_term = _cross(axis, vec)
-    dot_term = _dot(axis, vec) * (1 - cos_a)
-    return tuple(vec[i] * cos_a + cross_term[i] * sin_a + axis[i] * dot_term for i in range(3))
+# The vector/two-body math these used to define privately now lives in
+# backend/orbital.py, shared with planet_transfer.py and unit-tested there
+# (tests/test_orbital.py). Aliased rather than renamed at every call site
+# so the transfer logic below stays diff-able against its live-tested form.
+_angle_of = orbital.angle_of
+_cross = orbital.cross
+_dot = orbital.dot
+_norm = orbital.norm
+_rotate_about_axis = orbital.rotate_about_axis
 
 
 def compute_direct_transfer_plan(client, vessel, parent, moon):
@@ -370,63 +350,13 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
         job.check_abort()
         job.sleep(0.2)
 
-    # Safety check, before anything else: the phase-angle transfer only
-    # controls WHEN the vessel arrives relative to the moon, not the exact
-    # closest-approach distance (that needs real 3D targeting this simple
-    # model doesn't do). A "clean" phase match could still line up a
-    # near-direct hit on the moon's surface -- we want a slingshot/capture
-    # around it, never straight into it. periapsis_altitude is well-defined
-    # even for a hyperbolic flyby (unlike apoapsis), so check it the moment
-    # SOI entry is detected, well before actually reaching that periapsis.
-    min_safe_periapsis_m = max(target_periapsis_m * 0.5, moon.equatorial_radius * 0.05)
-    if vessel.orbit.periapsis_altitude < min_safe_periapsis_m:
-        job.message = f"correcting course -- raw arrival would pass too close to {moon.name}"
-        node = maneuver.adjust_other_apsis_now(client, vessel, min_safe_periapsis_m * 1.5)
-        maneuver.execute_node(client, vessel, job, node)
-
-    # A phase-angle Hohmann-style transfer aims for a capture, but doesn't
-    # precisely target a bound arrival -- entering the moon's SOI is often
-    # still a HYPERBOLIC flyby (eccentricity >= 1), not an actual capture,
-    # especially with only an approximate transfer window. A hyperbolic
-    # orbit has no real apoapsis (kRPC reports a negative apoapsis_altitude
-    # and a meaningless time_to_apoapsis for one), so the next step's
-    # "burn at apoapsis" would be undefined -- confirmed live: this silently
-    # produced a huge, wrong burn that flung a real vessel out of Kerbin's
-    # SOI entirely into a solar orbit, on top of never reaching Mun. If
-    # we're still on an escape trajectory, do a capture burn first: at the
-    # flyby's periapsis (always well-defined, hyperbolic or not), lower
-    # apoapsis down to something well inside the moon's SOI so the orbit
-    # actually becomes bound before the shaping/circularizing burns below.
-    if vessel.orbit.eccentricity >= 1:
-        job.message = f"capturing at {moon.name} (arrival was a flyby, not a capture)"
-        capture_apoapsis_m = max(target_periapsis_m * 4, moon.sphere_of_influence * 0.5)
-        node = maneuver.change_apoapsis_node(client, vessel, capture_apoapsis_m, burn_at="periapsis")
-        maneuver.execute_node(client, vessel, job, node)
-
-    # Two burns, not one -- the capture orbit's own periapsis (wherever the
-    # arrival trajectory happened to put it) is not target_periapsis_m, and
-    # calling change_apoapsis_node(target_periapsis_m, burn_at="periapsis")
-    # here (the old code) silently assumed it was: that treats
-    # target_periapsis_m as a new APOAPSIS while leaving the actual arrival
-    # periapsis untouched, which is nonsense whenever the arrival periapsis
-    # doesn't happen to already be close to the target (confirmed live: a
-    # real transfer's capture periapsis was nowhere near 30km, so "set
-    # apoapsis to 30km, periapsis stays wherever it is" produced a huge,
-    # wrong burn instead of a clean circular capture orbit). Correct
-    # sequence: first pin periapsis to the target altitude by burning at
-    # the (far, slow, cheap) capture apoapsis, then circularize by burning
-    # at that new periapsis.
-    job.message = f"shaping periapsis at {moon.name}"
-    node = maneuver.change_periapsis_node(client, vessel, target_periapsis_m, burn_at="apoapsis")
-    maneuver.execute_node(client, vessel, job, node)
-
-    job.message = f"circularizing at {moon.name}"
-    node = maneuver.circularize_node(client, vessel, at="periapsis")
-    maneuver.execute_node(client, vessel, job, node)
-
-    if target_inclination_deg is not None:
-        job.message = f"adjusting inclination around {moon.name}"
-        node = maneuver.change_inclination_node(client, vessel, target_inclination_deg)
-        maneuver.execute_node(client, vessel, job, node)
+    # Arrival: safety check, capture if the approach is still hyperbolic,
+    # shape periapsis, circularize, optional plane change. Identical to what
+    # a planet arrival needs, so it lives in arrival.py and is shared with
+    # planet_transfer.py -- every live-testing fix in that sequence applies
+    # to both.
+    arrival.capture_and_circularize(
+        client, vessel, job, moon, target_periapsis_m, target_inclination_deg,
+    )
 
     job.message = f"arrived at {moon.name}"

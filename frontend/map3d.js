@@ -62,10 +62,34 @@ function fmt(n, digits = 0) {
   return Number(n).toLocaleString(undefined, { maximumFractionDigits: digits });
 }
 
+// The canvas must track the container's real, current size -- never a
+// hardcoded guess. Two ways that used to go wrong:
+//
+//   * init() ran at page load and read clientWidth. If the map was hidden
+//     or the layout hadn't settled, that reads 0, so it fell back to a
+//     hardcoded 700 and stayed 700px wide until something happened to
+//     trigger a window resize.
+//   * The only resize listener was on `window`. But the container also
+//     changes width when a tab switch shows/hides panels around it, or on
+//     any other reflow -- none of which fire a window resize event, so the
+//     canvas kept rendering at a stale size and looked stretched.
+//
+// measure() reads both dimensions off the element (height included, rather
+// than duplicating the CSS value in JS), and a ResizeObserver below reacts
+// to the size changing for any reason at all.
+function measure() {
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  return { width, height, valid: width > 0 && height > 0 };
+}
+
 function init() {
   container = document.getElementById("map3d-container");
-  const width = container.clientWidth || 700;
-  const height = 350;
+  // Fall back only for the very first frame, when the element may not be
+  // laid out yet; the ResizeObserver corrects it as soon as it is.
+  const { width: w0, height: h0, valid } = measure();
+  const width = valid ? w0 : 700;
+  const height = valid ? h0 : 350;
 
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x060a12);
@@ -117,15 +141,26 @@ function init() {
     tooltipEl.style.display = "none";
     lastPointerEvent = null;
   });
-  window.addEventListener("resize", onResize);
+  // Fires whenever the container's box changes for ANY reason -- window
+  // resize, tab switch revealing it, a panel above it appearing, the
+  // browser zoom changing. A window-resize listener catches only the first
+  // of those.
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(onResize).observe(container);
+  } else {
+    window.addEventListener("resize", onResize);
+  }
 
   animate();
 }
 
 function onResize() {
-  if (!container) return;
-  const width = container.clientWidth || 700;
-  const height = 350;
+  if (!container || !renderer) return;
+  const { width, height, valid } = measure();
+  // A hidden element measures 0x0. Skip rather than baking in a degenerate
+  // aspect ratio -- the observer fires again with real numbers the moment
+  // it becomes visible.
+  if (!valid) return;
   camera.aspect = width / height;
   camera.updateProjectionMatrix();
   renderer.setSize(width, height);

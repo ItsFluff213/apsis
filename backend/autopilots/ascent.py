@@ -1,54 +1,191 @@
 """Ascent autopilot: launch -> gravity turn -> automatic staging -> circularize.
 
-Based on the standard kRPC launch-into-orbit pattern, extended to use tagged
-decouplers (see backend/parts.py) for staging when available, with a
-fallback of "activate next stage when current stage's engines flame out".
+The steering law here is a real gravity turn, not a pitch schedule. The
+difference matters for fuel, which is the whole point of the maneuver:
+
+A pitch schedule commands pitch purely as a function of altitude -- at 20km
+you are at 45 degrees whether or not the rocket is actually *flying* in that
+direction. Whenever commanded attitude and the velocity vector disagree, the
+craft flies at an angle of attack: part of the thrust goes into turning
+instead of accelerating (steering loss), and the airframe presents its side
+to the airstream (extra drag, and real aerodynamic torque fighting the
+autopilot). That was the previous implementation here.
+
+A gravity turn instead uses gravity to do the turning. Pitch over by a few
+degrees once moving fast enough to have aerodynamic authority (the "pitch
+kick"), then simply hold *surface prograde*. Gravity pulls the velocity
+vector steadily downrange, and because thrust stays aligned with velocity
+there is no steering loss and near-zero angle of attack the whole way up.
+The trajectory shape comes out of the physics rather than being dictated,
+which is exactly why it is the efficient one.
+
+Two guards on top of the pure law, both of which real launch vehicles also
+need:
+  * The angle of attack is clamped (see MAX_AOA_DEG). Pure prograde-holding
+    has no restoring force if something knocks the velocity vector around --
+    a staging transient, a gust, a thrust asymmetry -- so the commanded
+    attitude is allowed to differ from prograde only by a few degrees while
+    there is meaningful air. Above the atmosphere the clamp is irrelevant
+    and the craft simply aims at the horizon to build orbital velocity.
+  * There is a floor on how far the turn can lag (see `_schedule_pitch`).
+    A very low thrust-to-weight craft left purely to gravity can fail to
+    turn at all and fly straight up; the schedule acts as a "you should be
+    at least this far over by now" backstop, never as the primary command.
+
+Staging is delegated to backend/autopilots/staging.py, shared with the
+mid-burn staging in maneuver.execute_node.
 """
 
-from backend import parts
-from backend.autopilots import maneuver
+import math
+
+from backend.autopilots import maneuver, staging
+
+# How far off the velocity vector the autopilot may ever command while in
+# meaningful atmosphere. Small enough that drag stays near its
+# zero-lift minimum, large enough to actually authority-correct a
+# disturbance.
+MAX_AOA_DEG = 5.0
+
+# Surface speed at which to make the initial pitch kick. Too early and the
+# fins/gimbal have no authority and the rocket flops; too late and it has
+# already wasted propellant climbing vertically out of the thickest air.
+PITCH_KICK_SPEED_MS = 60.0
+PITCH_KICK_DEG = 3.0
+
+G0 = 9.80665
 
 
-def _stage_has_fuel(vessel, stage_num):
-    """True if the given stage's parts still hold meaningful propellant.
-    available_thrust hitting 0 already implies the *active* engine is dry,
-    but this double-checks against the actual resources in that stage
-    (not just the engine's current draw) before we let go of it -- staging
-    should only ever drop a stage once it's genuinely empty, not just
-    once the currently-firing engine happens to read no thrust."""
-    try:
-        res = vessel.resources_in_decouple_stage(stage_num, cumulative=False)
-        for name in ("LiquidFuel", "Oxidizer", "SolidFuel"):
-            if name in res.names and res.amount(name) > 0.1:
-                return False
-        return True
-    except Exception:
-        return True  # can't tell -- don't block staging on an unknown
+def _efficient_throttle(vessel, flight, atmosphere_depth):
+    """Caps throttle (never raises it) to avoid overspeeding low in the
+    atmosphere, where excess speed buys drag rather than orbital energy.
 
+    The right cap is terminal velocity: the speed at which drag equals
+    weight. Below it, thrust is mostly buying altitude and speed; push past
+    it and an increasing share is spent pushing air aside, which is pure
+    loss. kRPC exposes the live drag force and the vessel's mass, so this
+    can be measured off the actual craft and the actual atmosphere rather
+    than guessed at.
 
-def _efficient_throttle(flight, atmosphere_depth):
-    """Caps throttle (never raises it) to avoid needlessly overspeeding in
-    the thick lower atmosphere, where excess speed just burns extra fuel
-    fighting aerodynamic drag rather than buying orbital energy. A simple
-    "altitude/10" speed guideline (a well-known practical rule of thumb
-    for stock aero, not a rigorous optimal-control solution) -- fine
-    above the atmosphere or once already slower than the limit."""
+    Replaces an older `speed <= altitude/10` rule of thumb, which is a
+    stock-aero folk heuristic with no dependence on the craft at all -- a
+    draggy wide payload and a slender pencil rocket got the identical
+    limit. Falls back to that heuristic only if the drag reading is
+    unavailable, since it is still better than no cap at all.
+    """
     if not atmosphere_depth or flight.mean_altitude >= atmosphere_depth:
         return 1.0
-    speed_limit = max(flight.mean_altitude / 10.0, 100.0)
-    if flight.speed <= speed_limit:
+
+    try:
+        drag = flight.drag
+        drag_magnitude = math.sqrt(sum(c * c for c in drag))
+        weight = vessel.mass * vessel.orbit.body.surface_gravity
+        if drag_magnitude > weight * 1.05:
+            # Past terminal velocity: ease off in proportion to the
+            # overshoot rather than chopping to a fixed fraction, so the
+            # craft settles near the limit instead of oscillating around it.
+            excess = (drag_magnitude - weight) / weight
+            return max(0.4, 1.0 - excess)
         return 1.0
-    overspeed_frac = (flight.speed - speed_limit) / speed_limit
-    return max(0.4, 1.0 - overspeed_frac)
+    except Exception:
+        speed_limit = max(flight.mean_altitude / 10.0, 100.0)
+        if flight.speed <= speed_limit:
+            return 1.0
+        overspeed_frac = (flight.speed - speed_limit) / speed_limit
+        return max(0.4, 1.0 - overspeed_frac)
+
+
+def _schedule_pitch(altitude, turn_start_altitude_m, turn_end_altitude_m):
+    """The backstop pitch profile: where the turn should have got to by a
+    given altitude, worst case. Used only as a floor under the gravity
+    turn, never as the command itself -- see `_gravity_turn_pitch`.
+
+    Square-root rather than linear: a gravity turn naturally pitches over
+    quickly at first (when it is slow and gravity has the most leverage on
+    the velocity vector) and then flattens out, so a linear ramp would
+    demand the craft still be near-vertical well after it should have
+    turned.
+    """
+    if altitude <= turn_start_altitude_m:
+        return 90.0
+    if altitude >= turn_end_altitude_m:
+        return 0.0
+    frac = (altitude - turn_start_altitude_m) / (turn_end_altitude_m - turn_start_altitude_m)
+    return 90.0 * (1.0 - math.sqrt(frac))
+
+
+def _gravity_turn_pitch(flight, kicked, altitude, turn_start_altitude_m, turn_end_altitude_m):
+    """The commanded pitch for this tick: follow prograde, clamped.
+
+    Before the pitch kick the craft holds vertical. After it, the command
+    is the craft's actual flight path angle (i.e. prograde) -- that is the
+    gravity turn. The schedule floor then ensures a sluggish craft cannot
+    simply refuse to turn.
+    """
+    if not kicked:
+        return 90.0
+
+    # flight.pitch is the *nose* attitude; the flight path angle is what
+    # prograde actually is, derived from the velocity components. Using the
+    # nose angle here would make the loop chase its own tail (command =
+    # current attitude is a no-op that freezes the turn wherever it started).
+    horizontal = flight.horizontal_speed
+    vertical = flight.vertical_speed
+    if horizontal <= 0.1 and vertical <= 0.1:
+        return 90.0
+    prograde_pitch = math.degrees(math.atan2(vertical, horizontal))
+
+    floor_pitch = _schedule_pitch(altitude, turn_start_altitude_m, turn_end_altitude_m)
+    # max(): the floor may only *hold the nose up* relative to prograde,
+    # never push it down -- pitching below prograde would mean deliberately
+    # flying at negative angle of attack, which is the loss this whole
+    # function exists to avoid.
+    return max(prograde_pitch, floor_pitch)
+
+
+def _clamp_to_aoa(commanded_pitch, flight, in_atmosphere):
+    """Keep the commanded pitch within MAX_AOA_DEG of the actual velocity
+    vector while there is air to fight. Outside the atmosphere the
+    constraint is meaningless (no airstream, no drag penalty) and would
+    only slow down the final flattening to the horizon."""
+    if not in_atmosphere:
+        return commanded_pitch
+    horizontal = flight.horizontal_speed
+    vertical = flight.vertical_speed
+    if horizontal <= 0.1 and vertical <= 0.1:
+        return commanded_pitch
+    prograde_pitch = math.degrees(math.atan2(vertical, horizontal))
+    return max(prograde_pitch - MAX_AOA_DEG, min(prograde_pitch + MAX_AOA_DEG, commanded_pitch))
+
+
+def _delta_v_capacity(vessel):
+    """Tsiolkovsky delta-v from current mass to dry mass at current Isp.
+    Used only to report how much the ascent spent, so different steering
+    tweaks can actually be compared between launches instead of judged by
+    eye."""
+    isp = vessel.specific_impulse
+    if not isp or isp <= 0:
+        return 0.0
+    wet, dry = vessel.mass, vessel.dry_mass
+    if wet <= dry or dry <= 0:
+        return 0.0
+    return isp * G0 * math.log(wet / dry)
 
 
 def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, target_inclination_deg=0.0,
-               turn_start_altitude_m=10000, turn_end_altitude_m=45000):
-    """turn_start_altitude_m defaults to 10km, not straight off the pad --
-    staying vertical through the thick lower atmosphere (where most of the
-    drag is) before starting to pitch over avoids fighting aerodynamic
-    forces sideways while still low and slow; the turn happens entirely in
-    thinner air instead."""
+               turn_start_altitude_m=1000, turn_end_altitude_m=45000):
+    """turn_start_altitude_m is where the gravity turn is allowed to begin,
+    but the actual trigger is PITCH_KICK_SPEED_MS -- speed, not altitude,
+    is what determines whether the craft can steer. The altitude is a floor
+    so a very high-thrust craft doesn't try to pitch over while still
+    metres off the pad.
+
+    Note this is much lower (1km) than the 10km the old pitch-schedule
+    version used. That 10km existed to limit the damage of turning at high
+    angle of attack in thick air -- with prograde-following there is no
+    angle of attack to speak of, so starting the turn early is both safe
+    and considerably cheaper: turning low and slow is exactly when gravity
+    has the most leverage to do the work for free.
+    """
     sc = client.space_center
 
     if vessel != sc.active_vessel:
@@ -79,9 +216,8 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     # oscillation was nonzero and pitch_yaw_oscillation_latched was True,
     # i.e. it had detected and locked into an oscillating state itself.
     # target_smoothing_time defaults to 0 (no smoothing of target changes
-    # at all) -- giving it some smooths out the response to each gravity-
-    # turn target update instead of snapping straight at it and
-    # overshooting.
+    # at all) -- giving it some smooths out the response to each steering
+    # update instead of snapping straight at it and overshooting.
     ap.target_smoothing_time = 0.5
 
     ap.engaged = True
@@ -91,94 +227,53 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     body = vessel.orbit.body
     flight = vessel.flight(body.reference_frame)
     atmosphere_depth = body.atmosphere_depth
-    turn_angle = 0
+    target_heading = 90 - target_inclination_deg
 
-    decouplers_by_stage = parts.get_decouplers_by_stage(vessel)
-    fired_stages = set()
+    dv_at_liftoff = _delta_v_capacity(vessel)
+    stager = staging.Stager(vessel)
+    settle = staging.settle_on_attitude(ap)
+    kicked = False
+    last_commanded_pitch = 90.0
 
     try:
-        # --- Ascent + gravity turn + auto-staging ---
+        # --- Ascent: gravity turn + auto-staging ---
         while True:
             job.check_abort()
             altitude = flight.mean_altitude
             apoapsis = vessel.orbit.apoapsis_altitude
+            in_atmosphere = bool(atmosphere_depth) and altitude < atmosphere_depth
 
-            if turn_start_altitude_m < altitude < turn_end_altitude_m:
-                frac = (altitude - turn_start_altitude_m) / (turn_end_altitude_m - turn_start_altitude_m)
-                new_turn_angle = frac * 90
-                if abs(new_turn_angle - turn_angle) > 0.5:
-                    turn_angle = new_turn_angle
-                    ap.target_pitch_and_heading(90 - turn_angle, 90 - target_inclination_deg)
-            elif altitude >= turn_end_altitude_m:
-                ap.target_pitch_and_heading(0, 90 - target_inclination_deg)
+            if not kicked and altitude >= turn_start_altitude_m and flight.speed >= PITCH_KICK_SPEED_MS:
+                kicked = True
+                job.message = "pitch kick -- starting gravity turn"
 
-            control.throttle = _efficient_throttle(flight, atmosphere_depth)
+            if altitude >= turn_end_altitude_m or not in_atmosphere:
+                # Out of the air (or high enough that the turn is done):
+                # aim at the horizon and put everything into orbital speed.
+                commanded_pitch = 0.0
+            else:
+                commanded_pitch = _gravity_turn_pitch(
+                    flight, kicked, altitude, turn_start_altitude_m, turn_end_altitude_m,
+                )
+                commanded_pitch = _clamp_to_aoa(commanded_pitch, flight, in_atmosphere)
 
-            # Auto-staging: only once the current stage has neither thrust
-            # nor any meaningful propellant left in it -- not just once
-            # the currently-firing engine happens to read no thrust, but
-            # confirmed against the stage's actual remaining resources too
-            # (see _stage_has_fuel). That fuel check only applies once
-            # we're actually dropping a spent stage, though -- the very
-            # first activation (igniting the top stage's engine at launch)
-            # also has available_thrust == 0, not because it's empty but
-            # because nothing has fired yet, and the top stage is
-            # obviously still full pre-launch. Confirmed live: without
-            # this distinction, the fuel check blocked ignition entirely
-            # and the rocket never left the pad. Prefer a tagged decoupler
-            # for the current stage number if one exists.
-            stage_confirmed_empty = not fired_stages or not _stage_has_fuel(vessel, control.current_stage)
-            if (vessel.available_thrust < 0.1 and stage_confirmed_empty
-                    and control.current_stage not in fired_stages):
-                stage_num = control.current_stage
+            # Only push a new target when it has actually moved. Every
+            # target change restarts the autopilot's smoothing ramp, so
+            # rewriting an unchanged value 4x/sec keeps it permanently in
+            # its transient response instead of settled on the target.
+            if abs(commanded_pitch - last_commanded_pitch) > 0.5:
+                last_commanded_pitch = commanded_pitch
+                ap.target_pitch_and_heading(commanded_pitch, target_heading)
 
-                # Cut throttle for the actual separation instant -- full
-                # throttle through the exact moment of decoupling maximizes
-                # any plume impingement / collision torque against the
-                # departing stage. Deliberately NOT touching the autopilot's
-                # target here (first version of this fix read live
-                # flight.pitch/flight.heading to "hold current attitude",
-                # which caused a hard ~180 degree flip: heading is only
-                # meaningful when not pointed near-vertical, and a rocket is
-                # still near pitch=90 for its first stage or two -- reading
-                # heading right there can return a near-arbitrary value,
-                # and commanding the autopilot to chase that produced
-                # exactly the flip-then-wobble-then-wasted-dv reported
-                # live). The already-well-defined turn-angle target stays
-                # in effect throughout; only the throttle is touched.
-                control.throttle = 0.0
+            control.throttle = _efficient_throttle(vessel, flight, atmosphere_depth)
 
-                tagged = decouplers_by_stage.get(stage_num)
-                if tagged:
-                    for d in tagged:
-                        try:
-                            if d.decoupler and not d.decoupler.decoupled:
-                                d.decoupler.decouple()
-                        except Exception:
-                            # kRPC can throw a null-reference error reading
-                            # .decoupler on some parts (observed on a real
-                            # craft). activate_next_stage() below still
-                            # fires the stage's actual staging action
-                            # regardless.
-                            pass
-                control.activate_next_stage()
-                fired_stages.add(stage_num)
-                job.message = f"staged (stage {stage_num})"
-
-                # Wait for the autopilot to actually confirm it's still on
-                # target (ap.error small) before committing back to full
-                # thrust, rather than a fixed delay -- a fixed pause can
-                # restore full throttle while still meaningfully off-target
-                # (e.g. from the CoM/moment-of-inertia shift at separation),
-                # which just burns hard in a wrong direction and wastes dv.
-                # Capped so a genuinely stuck autopilot doesn't stall the
-                # ascent forever.
-                settle_elapsed = 0.0
-                while ap.error > 5 and settle_elapsed < 3.0:
-                    job.check_abort()
-                    job.sleep(0.1)
-                    settle_elapsed += 0.1
-                control.throttle = _efficient_throttle(flight, atmosphere_depth)
+            # Auto-staging. verify_empty=True here (unlike mid-burn): at
+            # launch the top stage also reads zero thrust simply because
+            # nothing has ignited yet, and confirmed live, treating that as
+            # "empty" blocked ignition entirely and the rocket never left
+            # the pad. Checking the stage's actual remaining propellant
+            # tells the two cases apart.
+            stager.stage_if_dry(job, verify_empty=True, settle=settle)
 
             if apoapsis >= target_apoapsis_m:
                 job.message = "target apoapsis reached, coasting to space"
@@ -205,4 +300,13 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     maneuver.execute_node(client, vessel, job, node)
 
     control.sas = True
-    job.message = "orbit achieved"
+
+    # Report what the climb actually cost. Staging mid-ascent makes this an
+    # underestimate (delta-v capacity jumps back up when dead mass is
+    # dropped), so it is a comparison figure between similar launches of
+    # the same craft, not an absolute budget.
+    dv_remaining = _delta_v_capacity(vessel)
+    if dv_at_liftoff > 0:
+        job.message = f"orbit achieved (~{dv_at_liftoff - dv_remaining:.0f} m/s used, {dv_remaining:.0f} m/s left)"
+    else:
+        job.message = "orbit achieved"
