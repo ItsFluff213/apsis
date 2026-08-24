@@ -117,10 +117,18 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
             # Auto-staging: only once the current stage has neither thrust
             # nor any meaningful propellant left in it -- not just once
             # the currently-firing engine happens to read no thrust, but
-            # confirmed against the stage's actual remaining resources
-            # too (see _stage_has_fuel). Prefer a tagged decoupler for the
-            # current stage number if one exists.
-            if (vessel.available_thrust < 0.1 and not _stage_has_fuel(vessel, control.current_stage)
+            # confirmed against the stage's actual remaining resources too
+            # (see _stage_has_fuel). That fuel check only applies once
+            # we're actually dropping a spent stage, though -- the very
+            # first activation (igniting the top stage's engine at launch)
+            # also has available_thrust == 0, not because it's empty but
+            # because nothing has fired yet, and the top stage is
+            # obviously still full pre-launch. Confirmed live: without
+            # this distinction, the fuel check blocked ignition entirely
+            # and the rocket never left the pad. Prefer a tagged decoupler
+            # for the current stage number if one exists.
+            stage_confirmed_empty = not fired_stages or not _stage_has_fuel(vessel, control.current_stage)
+            if (vessel.available_thrust < 0.1 and stage_confirmed_empty
                     and control.current_stage not in fired_stages):
                 stage_num = control.current_stage
 
