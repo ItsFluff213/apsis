@@ -86,11 +86,20 @@ def change_inclination_node(client, vessel, target_inclination_deg):
     """Adds a node at the next ascending node (relative to the body's
     equatorial plane -- the same reference Orbit.inclination already uses)
     that changes the orbit's inclination to the target, leaving the orbit
-    shape otherwise unchanged. Sign convention assumes kRPC's node-normal
-    axis matches standard orbital-angular-momentum direction (positive
-    normal at the ascending node increases inclination) -- this hasn't been
-    independently verified against a live burn yet; check the resulting
-    inclination after the first real use."""
+    shape (speed, radius) otherwise unchanged.
+
+    The delta-v is split between prograde and normal components -- not
+    applied purely normal. A pure-normal burn of magnitude 2*v*sin(di/2)
+    only approximates a plane rotation for *small* di: for a large change
+    (confirmed live with a 90 degree change) it adds that much speed
+    entirely sideways on top of the existing forward speed, making the
+    resulting total speed *higher* than a correct plane change would --
+    for close to a 90 degree change this pushed the resulting speed past
+    local escape velocity, flinging a real test satellite out of Minmus's
+    SOI entirely instead of just re-tilting its orbit. Splitting the burn
+    into prograde*(cos(di)-1) and normal*sin(di) instead rotates the
+    velocity vector while preserving its magnitude exactly, for any angle,
+    which is what a plane-change-only maneuver actually requires."""
     sc = client.space_center
     orbit = vessel.orbit
     delta_inclination = math.radians(target_inclination_deg) - orbit.inclination
@@ -102,9 +111,10 @@ def change_inclination_node(client, vessel, target_inclination_deg):
 
     r = orbit.radius_at_true_anomaly(ta_an)
     v = vis_viva_speed(orbit.body.gravitational_parameter, r, orbit.semi_major_axis)
-    normal_dv = 2 * v * math.sin(delta_inclination / 2.0)
+    prograde_dv = v * (math.cos(delta_inclination) - 1)
+    normal_dv = v * math.sin(delta_inclination)
 
-    return vessel.control.add_node(ut, normal=normal_dv)
+    return vessel.control.add_node(ut, prograde=prograde_dv, normal=normal_dv)
 
 
 def phasing_node(client, vessel, angle_to_close_deg, num_orbits=1, burn_at="apoapsis"):
@@ -179,6 +189,17 @@ def burn_away_from_debris(client, vessel, job, min_distance_m=50, max_burn_s=6, 
     ap.engaged = True
 
     job.message = "burning clear of separated stage"
+    # Hold whatever attitude the vessel was AT THE MOMENT this burn started,
+    # not whatever it happens to be each tick -- a separation event can
+    # leave the vessel briefly wobbling, and continuously re-targeting the
+    # live (still-settling) pitch/heading was chasing that wobble instead
+    # of damping it, visibly worsening it right during this burn. Confirmed
+    # live: a real tumble (AoA -21 deg, 14.8 deg autopilot error) that
+    # coincided exactly with this phase, which then recovered as soon as
+    # the main ascent's fixed steering target took back over afterward.
+    flight = vessel.flight(vessel.orbit.body.reference_frame)
+    target_pitch, target_heading = flight.pitch, flight.heading
+    ap.target_pitch_and_heading(target_pitch, target_heading)
     control.throttle = throttle
     elapsed = 0.0
     try:
@@ -187,8 +208,6 @@ def burn_away_from_debris(client, vessel, job, min_distance_m=50, max_burn_s=6, 
             dist = closest_other_vessel_distance(client, vessel)
             if dist is not None and dist >= min_distance_m:
                 break
-            flight = vessel.flight(vessel.orbit.body.reference_frame)
-            ap.target_pitch_and_heading(flight.pitch, flight.heading)
             job.sleep(0.1)
             elapsed += 0.1
     finally:

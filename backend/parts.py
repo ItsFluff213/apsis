@@ -60,11 +60,19 @@ def get_vessel_role_tag(vessel):
     """
     try:
         controlling = vessel.parts.controlling
+        if controlling is None:
+            return None, None
+        tag = controlling.tag
     except Exception:
+        # Confirmed live: a vessel that's unloaded/out of physics range
+        # (0 parts reported, e.g. a distant landed craft) can still hand
+        # back a non-None `controlling` part whose own .tag getter throws
+        # the same server-side null-reference error -- not just
+        # `vessel.parts.controlling` itself. Both need covering, or this
+        # exception escapes _resolve_type and takes down list_vessels()
+        # for every vessel, not just this one.
         return None, None
-    if controlling is None:
-        return None, None
-    return _tag_category(controlling.tag)
+    return _tag_category(tag)
 
 
 def find_by_tag(vessel, tag: str):

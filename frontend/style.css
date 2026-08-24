@@ -1,14 +1,30 @@
 :root {
   color-scheme: dark;
   --bg: #0e1420;
+  --bg-well: #0e1420;   /* recessed surfaces (inputs, code wells) inside a --panel */
   --panel: #161d2b;
+  --panel-alt: #1f2740;
   --border: #263149;
   --text: #dbe4f5;
   --dim: #7d8aa8;
   --accent: #4da3ff;
+  --accent-ink: #06111f; /* text color on top of --accent */
   --good: #4dd28c;
   --warn: #ffb84d;
   --bad: #ff6b6b;
+
+  /* Spacing scale -- every gap/padding/margin in this file is one of
+     these, so the whole dashboard shares one rhythm instead of each
+     control group having picked its own numbers as it was added. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-pop: 0 8px 24px rgba(0,0,0,0.5);
 }
 
 * { box-sizing: border-box; }
@@ -18,11 +34,107 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", system-ui, sans-serif;
-  padding: 24px;
+  padding: var(--sp-5);
 }
 
-h1 { font-size: 20px; margin: 0 0 4px; }
-.subtitle { color: var(--dim); margin: 0 0 20px; font-size: 13px; }
+h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
+.subtitle { color: var(--dim); margin: 0 0 var(--sp-4); font-size: 13px; }
+
+/* Shared component styles -- every panel/field/button in the dashboard
+   (the profile bar, constellation forms, interplanetary panel, moon
+   transfer controls, sync bar, ascent forms, ...) opts into these instead
+   of redeclaring the same colors/radii/padding, so a look change here
+   applies everywhere at once and new controls match by default. */
+.panel,
+.map-overview, .constellations-panel, .interplanetary-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px var(--sp-4);
+  margin-bottom: var(--sp-5);
+}
+.panel-header,
+.map-header, .constellations-header, .interplanetary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+}
+.panel-header h2,
+.map-header h2, .constellations-header h2, .interplanetary-header h2 { font-size: 15px; margin: 0; }
+
+.field {
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+}
+.field:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+.btn {
+  background: var(--accent);
+  border: none;
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  padding: 6px var(--sp-3);
+  cursor: pointer;
+  font-size: 12px;
+  transition: filter 0.1s;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:disabled { background: var(--border); color: var(--dim); cursor: not-allowed; filter: none; }
+.btn-ghost {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover { color: var(--text); filter: none; }
+.btn-danger { background: var(--bad); }
+
+/* Every ad-hoc form/bar that grew its own copy of these input/button rules
+   over time now shares one definition. */
+.profile-bar select, .profile-bar input,
+.new-constellation-form input, .new-constellation-form select,
+.sync-bar input,
+.edit-orbit-form input,
+.ascent-form input, .ascent-form select,
+.parts-panel select, .parts-panel input {
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 5px 7px;
+  font-size: 12px;
+}
+.profile-bar button,
+.new-constellation-form button,
+.sync-bar button,
+.edit-orbit-form button,
+.ascent-form button,
+.group-constellation button,
+.group-interplanetary button,
+.interplanetary-actions button,
+.parts-panel button {
+  background: var(--accent);
+  border: none;
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  padding: 6px var(--sp-3);
+  cursor: pointer;
+  font-size: 12px;
+}
+.ascent-form button.abort { background: var(--bad); }
+.new-constellation-form button#nc-cancel,
+.parts-toggle {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+.group-interplanetary button:disabled { background: var(--border); color: var(--dim); cursor: not-allowed; }
 
 #conn-status {
   display: inline-block;
@@ -43,25 +155,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
   font-size: 12px;
   color: var(--dim);
 }
-.profile-bar select, .profile-bar input {
-  background: #161d2b;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
 .profile-bar input { width: 160px; }
-.profile-bar button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 12px;
-}
 .profile-hint { flex-basis: 100%; font-size: 11px; }
 
 .tabs {
@@ -85,7 +179,7 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .tab-btn.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: #06111f;
+  color: var(--accent-ink);
   font-weight: 600;
 }
 
@@ -212,65 +306,18 @@ body[data-tab="overview"] .vessel-card:hover .vessel-detail {
   display: block;
 }
 
-.constellations-panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 24px;
-}
-.constellations-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-.constellations-header h2 { font-size: 15px; margin: 0; }
-
 .new-constellation-form {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   margin-bottom: 12px;
   padding: 10px;
-  background: #0e1420;
+  background: var(--bg-well);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
-.new-constellation-form input, .new-constellation-form select {
-  background: #161d2b;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
-.new-constellation-form button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 5px 10px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.new-constellation-form button#nc-cancel {
-  background: transparent;
-  color: var(--dim);
-  border: 1px solid var(--border);
-}
-
-.interplanetary-panel {
-  display: none;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 24px;
-}
+.interplanetary-panel { display: none; }
 body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
-.interplanetary-header h2 { font-size: 15px; margin: 0 0 8px; }
 .interplanetary-hint {
   font-size: 12px;
   color: var(--dim);
@@ -281,7 +328,7 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 #ip-plan-text {
   width: 100%;
   height: 140px;
-  background: #0e1420;
+  background: var(--bg-well);
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 6px;
@@ -295,16 +342,6 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
   align-items: center;
   gap: 10px;
   margin-top: 8px;
-}
-.interplanetary-actions button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 6px 12px;
-  cursor: pointer;
-  font-size: 12px;
 }
 #ip-parse-status { font-size: 12px; }
 #ip-parse-status.ok { color: var(--good); }
@@ -325,22 +362,7 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 }
 .interplanetary-preview td:first-child { color: var(--text); }
 
-.group-interplanetary button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 5px 10px;
-  cursor: pointer;
-  font-size: 12px;
-  margin-top: 8px;
-}
-.group-interplanetary button:disabled {
-  background: var(--border);
-  color: var(--dim);
-  cursor: not-allowed;
-}
+.group-interplanetary button { margin-top: 8px; }
 
 .constellations-list {
   display: grid;
@@ -358,29 +380,11 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
   font-size: 12px;
   color: var(--dim);
 }
-.sync-bar input {
-  width: 220px;
-  background: #161d2b;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
-.sync-bar button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 4px 10px;
-  cursor: pointer;
-  font-size: 12px;
-}
+.sync-bar input { width: 220px; }
 #sync-status.ok { color: var(--good); }
 #sync-status.bad { color: var(--bad); }
 .constellation-box {
-  background: #0e1420;
+  background: var(--bg-well);
   border: 2px dashed var(--border);
   border-radius: 8px;
   padding: 10px;
@@ -405,7 +409,7 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
   align-items: center;
   justify-content: space-between;
   font-size: 11px;
-  background: #161d2b;
+  background: var(--panel);
   border-radius: 5px;
   padding: 3px 6px;
   margin-bottom: 4px;
@@ -438,30 +442,8 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 .constellation-box .delete-btn:hover {
   color: var(--text);
 }
-.edit-orbit-form {
-  display: flex;
-  gap: 6px;
-  margin: 6px 0;
-}
-.edit-orbit-form input {
-  width: 76px;
-  background: #161d2b;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 3px 6px;
-  font-size: 11px;
-}
-.edit-orbit-form button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 3px 8px;
-  cursor: pointer;
-  font-size: 11px;
-}
+.edit-orbit-form { display: flex; gap: 6px; margin: 6px 0; }
+.edit-orbit-form input, .edit-orbit-form button { width: 76px; font-size: 11px; padding: 3px 6px; }
 
 .vessel-card[draggable="true"] { cursor: grab; }
 .vessel-card.dragging { opacity: 0.5; }
@@ -474,24 +456,8 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
   font-size: 11px;
   color: var(--dim);
 }
-.group-constellation button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 3px 8px;
-  cursor: pointer;
-  font-size: 11px;
-}
+.group-constellation button { padding: 3px 8px; font-size: 11px; }
 
-.map-overview {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  margin-bottom: 24px;
-}
 .map-header {
   display: flex;
   align-items: center;
@@ -511,7 +477,7 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 .map-tooltip {
   position: absolute;
   pointer-events: none;
-  background: #0e1420;
+  background: var(--bg-well);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
@@ -581,7 +547,7 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 .vessel-type {
   font-size: 11px;
   color: var(--text);
-  background: #1f2740;
+  background: var(--panel-alt);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 2px 6px;
@@ -607,26 +573,8 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 }
 .roles code { color: var(--accent); }
 
-.parts-toggle {
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--dim);
-  border-radius: 6px;
-  padding: 3px 8px;
-  cursor: pointer;
-  font-size: 11px;
-  margin-bottom: 6px;
-}
-
-.parts-panel select, .parts-panel input, .parts-panel button {
-  background: #0e1420;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 4px;
-  padding: 2px 4px;
-  font-size: 11px;
-}
-.parts-panel button { cursor: pointer; }
+.parts-toggle { padding: 3px 8px; font-size: 11px; margin-bottom: 6px; }
+.parts-panel select, .parts-panel input, .parts-panel button { padding: 3px 5px; font-size: 11px; }
 
 .ascent-form {
   display: flex;
@@ -634,31 +582,8 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
   flex-wrap: wrap;
   margin-top: 8px;
 }
-.ascent-form input, .ascent-form select {
-  width: 72px;
-  background: #0e1420;
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 4px 6px;
-  font-size: 12px;
-}
-.ascent-form select.landing-waypoint {
-  width: 140px;
-}
-.ascent-form button {
-  background: var(--accent);
-  border: none;
-  color: #06111f;
-  font-weight: 600;
-  border-radius: 6px;
-  padding: 5px 10px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.ascent-form button.abort {
-  background: var(--bad);
-}
+.ascent-form input, .ascent-form select { width: 72px; }
+.ascent-form select.landing-waypoint { width: 140px; }
 
 .job-status {
   margin-top: 8px;

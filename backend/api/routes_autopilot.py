@@ -26,6 +26,7 @@ class InterplanetaryRequest(BaseModel):
 class MoonTransferRequest(BaseModel):
     moon_name: str
     target_periapsis_m: float
+    target_inclination_deg: float | None = None
 
 
 def build_router(client, registry, jobs):
@@ -96,6 +97,7 @@ def build_router(client, registry, jobs):
         def run(job):
             moon_transfer.run_moon_transfer(
                 client, vessel, job, moon_name=body.moon_name, target_periapsis_m=body.target_periapsis_m,
+                target_inclination_deg=body.target_inclination_deg,
             )
 
         job = jobs.start(vessel_id, "moon-transfer", run, body.model_dump())

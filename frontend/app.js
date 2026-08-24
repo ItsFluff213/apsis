@@ -8,28 +8,49 @@ const CATEGORY_COLORS = {
   booster: "#ff8a4d", satellite: "#4da3ff", docking: "#f472b6", station: "#c084fc",
   capsule: "#4dd28c", lander: "#ffd24d", probe: "#7d8aa8", unknown: "#dbe4f5",
 };
-// Simple polygon vertex lists (unit-scale, x/y in [-1,1]) giving each
-// category a distinct silhouette on the map and card badges. `docking` and
-// bare categories with no entry here (capsule, probe as a plain shape,
-// unknown) render as a plain circle instead.
-const CATEGORY_SHAPES = {
-  booster: [[0, -1], [0.87, 0.6], [-0.87, 0.6]],           // nose-up triangle
-  lander: [[0, 1], [0.87, -0.6], [-0.87, -0.6]],            // legs-down triangle
-  satellite: [[0, -1], [1, 0], [0, 1], [-1, 0]],            // diamond
-  station: [[0, -1], [0.87, -0.5], [0.87, 0.5], [0, 1], [-0.87, 0.5], [-0.87, -0.5]], // hexagon
-  probe: [[-0.8, -0.8], [0.8, -0.8], [0.8, 0.8], [-0.8, 0.8]], // square
+// Hand-drawn per-category icon bodies (24x24 viewBox), replacing the old
+// generic triangle/diamond/hexagon/square polygons -- these are meant to
+// actually read as the thing they represent (a rocket, a dish-and-panels
+// satellite, a capsule) rather than an arbitrary shape you have to learn to
+// associate with a category. `{c}` is substituted with the category color.
+const CATEGORY_ICONS = {
+  booster: `
+    <path d="M12 2c2.4 2 3.4 5.4 3.4 9.2 0 2.6-.5 4.9-1.3 6.8h-4.2c-.8-1.9-1.3-4.2-1.3-6.8C8.6 7.4 9.6 4 12 2z" fill="{c}"/>
+    <path d="M8.6 13.5 5 17.5l2.4-.6 1.6-2.3z" fill="{c}"/>
+    <path d="M15.4 13.5 19 17.5l-2.4-.6-1.6-2.3z" fill="{c}"/>
+    <circle cx="12" cy="9" r="1.3" fill="#0e1420"/>
+    <path d="M10.4 18h3.2l-.5 3.2a1.1 1.1 0 0 1-2.2 0z" fill="{c}"/>`,
+  lander: `
+    <rect x="8.5" y="6" width="7" height="7" rx="1.3" fill="{c}"/>
+    <circle cx="12" cy="9.5" r="1.6" fill="#0e1420"/>
+    <path d="M9 12.5 5.5 20M15 12.5 18.5 20M7.7 12.5 6.2 20M16.3 12.5 17.8 20" stroke="{c}" stroke-width="1.4" fill="none" stroke-linecap="round"/>
+    <path d="M4.8 20h2.2M17 20h2.2" stroke="{c}" stroke-width="1.4" stroke-linecap="round"/>`,
+  satellite: `
+    <rect x="9.3" y="9.3" width="5.4" height="5.4" rx="1" fill="{c}"/>
+    <path d="M2.5 6.5 8 9v6l-5.5 2.5z" fill="{c}"/>
+    <path d="M21.5 6.5 16 9v6l5.5 2.5z" fill="{c}"/>
+    <path d="M15 9 20 4M20 4h-2.6M20 4v2.6" stroke="{c}" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`,
+  station: `
+    <rect x="4" y="10.5" width="16" height="3" rx="1" fill="{c}"/>
+    <circle cx="12" cy="12" r="4.6" fill="none" stroke="{c}" stroke-width="1.6"/>
+    <rect x="10.5" y="2.5" width="3" height="4" rx="1" fill="{c}"/>
+    <rect x="10.5" y="17.5" width="3" height="4" rx="1" fill="{c}"/>`,
+  capsule: `
+    <path d="M8 21 6.5 12A5.5 6 0 0 1 12 3a5.5 6 0 0 1 5.5 9L16 21z" fill="{c}"/>
+    <circle cx="12" cy="10.5" r="1.8" fill="#0e1420"/>`,
+  probe: `
+    <rect x="8.5" y="9" width="7" height="7" rx="1.5" fill="{c}"/>
+    <path d="M12 9V4M12 4 9.5 2M12 4l2.5-2" stroke="{c}" stroke-width="1.3" fill="none" stroke-linecap="round"/>
+    <path d="M5.5 12h3M15.5 12h3" stroke="{c}" stroke-width="1.4" stroke-linecap="round"/>`,
+  docking: `
+    <circle cx="12" cy="12" r="9" fill="none" stroke="{c}" stroke-width="2.2"/>
+    <circle cx="12" cy="12" r="4" fill="{c}"/>`,
+  unknown: `<circle cx="12" cy="12" r="8" fill="{c}"/>`,
 };
 
 function svgIconFor(category, color) {
-  if (category === "docking") {
-    return `<svg width="12" height="12" viewBox="-1 -1 2 2"><circle r="1" fill="${color}"/><circle r="0.5" fill="#0e1420"/></svg>`;
-  }
-  const verts = CATEGORY_SHAPES[category];
-  if (!verts) {
-    return `<svg width="12" height="12" viewBox="-1 -1 2 2"><circle r="1" fill="${color}"/></svg>`;
-  }
-  const points = verts.map(([x, y]) => `${x},${y}`).join(" ");
-  return `<svg width="12" height="12" viewBox="-1 -1 2 2"><polygon points="${points}" fill="${color}"/></svg>`;
+  const body = (CATEGORY_ICONS[category] || CATEGORY_ICONS.unknown).replace(/\{c\}/g, color);
+  return `<svg width="16" height="16" viewBox="0 0 24 24">${body}</svg>`;
 }
 
 const vesselsEl = document.getElementById("vessels");
@@ -90,8 +111,11 @@ const ALL_BODY_NAMES = (function flatten(node, out) {
 // Sun-orbiting planets themselves.
 const MOON_NAMES = SYSTEM_TREE.children.flatMap(planet => (planet.children || []).map(m => m.name));
 
-let liveBodyAngles = new Map(); // name -> angle_deg, refreshed from /api/system
+let liveBodyAngles = new Map(); // name -> angle_deg (absolute, argp+true_anomaly), refreshed from /api/system
 let liveBodySma = new Map(); // name -> semi_major_axis_m
+let liveBodyRadius = new Map(); // name -> real instantaneous orbital radius (m)
+let liveBodyEcc = new Map(); // name -> eccentricity
+let liveBodyArgp = new Map(); // name -> argument_of_periapsis_deg
 
 async function refreshSystem() {
   try {
@@ -99,29 +123,49 @@ async function refreshSystem() {
     const bodies = await res.json();
     liveBodyAngles = new Map(bodies.map(b => [b.name, b.angle_deg]));
     liveBodySma = new Map(bodies.filter(b => b.semi_major_axis_m).map(b => [b.name, b.semi_major_axis_m]));
+    liveBodyRadius = new Map(bodies.filter(b => b.radius_m).map(b => [b.name, b.radius_m]));
+    liveBodyEcc = new Map(bodies.map(b => [b.name, b.eccentricity || 0]));
+    liveBodyArgp = new Map(bodies.map(b => [b.name, b.argument_of_periapsis_deg || 0]));
   } catch (e) {
     // kRPC not connected yet or request failed; keep the last known data.
   }
   if (window.Map3D) window.Map3D.setBodies(layoutSystem());
 }
 
+// Real instantaneous orbital radius (not the fixed semi-major axis) so a
+// visibly eccentric body (Moho, Eeloo, ...) sits where it actually is
+// in-game right now, not on a circle it only touches at two points.
 function radiusFor(node) {
-  if (node.topLevel && liveBodySma.has(node.name)) {
-    return liveBodySma.get(node.name) / SMA_SCALE;
+  if (node.topLevel && liveBodyRadius.has(node.name)) {
+    return liveBodyRadius.get(node.name) / SMA_SCALE;
   }
   return node.radius;
 }
 
 // World-space layout (Sun at 0,0), handed to map3d.js as (x, 0, z).
+// Each entry also carries the real orbit shape (scaled SMA, eccentricity,
+// argument of periapsis) for topLevel bodies so map3d.js can draw the
+// actual ellipse instead of a circle through the current radius.
 function layoutSystem() {
-  const positions = new Map(); // name -> {x, y, isMoon}
+  const positions = new Map(); // name -> {x, y, isMoon, orbitShape}
   function place(node, originX, originY) {
     const angle = liveBodyAngles.has(node.name) ? liveBodyAngles.get(node.name) : node.angle;
     const radius = radiusFor(node);
     const rad = (angle * Math.PI) / 180;
     const x = originX + radius * Math.cos(rad);
     const y = originY + radius * Math.sin(rad);
-    positions.set(node.name, { x, y, isMoon: node.radius < 30 && node.radius > 0 });
+    let orbitShape = null;
+    if (node.topLevel && liveBodySma.has(node.name)) {
+      orbitShape = {
+        smaScaled: liveBodySma.get(node.name) / SMA_SCALE,
+        eccentricity: liveBodyEcc.get(node.name) || 0,
+        argpDeg: liveBodyArgp.get(node.name) || 0,
+      };
+    }
+    positions.set(node.name, {
+      x, y, isMoon: node.radius < 30 && node.radius > 0,
+      originX, originY, orbitShape,
+    });
     for (const child of node.children || []) place(child, x, y);
   }
   place(SYSTEM_TREE, 0, 0);
@@ -177,6 +221,7 @@ function buildCard(vessel) {
     <div class="ascent-form group-ascent">
       <input class="ap-custom-alt" type="number" placeholder="altitude km" value="90" />
       <input class="ap-custom-incl" type="number" placeholder="incl deg" value="0" />
+      <button class="ap-polar-fill" title="Set inclination to 90&deg;">Polar</button>
       <button class="ap-custom-start">Launch custom orbit</button>
     </div>
     <div class="ascent-form group-landing">
@@ -196,6 +241,7 @@ function buildCard(vessel) {
     <div class="group-moon-transfer">
       <select class="moon-transfer-target"></select>
       <input class="moon-transfer-periapsis" type="number" placeholder="periapsis km" value="50" />
+      <input class="moon-transfer-incl" type="number" placeholder="incl deg (optional)" />
       <button class="moon-transfer-start">Transfer to moon</button>
     </div>
     <div class="job-status"></div>
@@ -228,6 +274,7 @@ function buildCard(vessel) {
     apAbort: root.querySelector(".ap-abort"),
     apCustomAlt: root.querySelector(".ap-custom-alt"),
     apCustomIncl: root.querySelector(".ap-custom-incl"),
+    apPolarFill: root.querySelector(".ap-polar-fill"),
     apCustomStart: root.querySelector(".ap-custom-start"),
     landingWaypoint: root.querySelector(".landing-waypoint"),
     landingStart: root.querySelector(".landing-start"),
@@ -238,6 +285,7 @@ function buildCard(vessel) {
     interplanetaryStart: root.querySelector(".interplanetary-start"),
     moonTransferTarget: root.querySelector(".moon-transfer-target"),
     moonTransferPeriapsis: root.querySelector(".moon-transfer-periapsis"),
+    moonTransferIncl: root.querySelector(".moon-transfer-incl"),
     moonTransferStart: root.querySelector(".moon-transfer-start"),
     jobStatus: root.querySelector(".job-status"),
   };
@@ -279,6 +327,10 @@ function buildCard(vessel) {
     startAscent(Number(els.apCustomAlt.value) * 1000, Number(els.apCustomIncl.value));
   });
 
+  els.apPolarFill.addEventListener("click", () => {
+    els.apCustomIncl.value = 90;
+  });
+
   els.apAbort.addEventListener("click", () => {
     fetch(`/api/autopilot/${vessel.id}/abort`, { method: "POST" });
   });
@@ -313,12 +365,14 @@ function buildCard(vessel) {
   });
 
   els.moonTransferStart.addEventListener("click", () => {
+    const inclRaw = els.moonTransferIncl.value.trim();
     fetch(`/api/autopilot/${vessel.id}/moon-transfer`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         moon_name: els.moonTransferTarget.value,
         target_periapsis_m: Number(els.moonTransferPeriapsis.value) * 1000,
+        target_inclination_deg: inclRaw === "" ? null : Number(inclRaw),
       }),
     });
   });

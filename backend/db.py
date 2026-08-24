@@ -31,13 +31,14 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 
 CREATE TABLE IF NOT EXISTS vessels (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     name TEXT NOT NULL,
     type TEXT NOT NULL DEFAULT 'unknown',
     notes TEXT DEFAULT '',
     save_profile TEXT NOT NULL DEFAULT 'default',
     first_seen TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen TEXT NOT NULL DEFAULT (datetime('now'))
+    last_seen TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (id, save_profile)
 );
 
 CREATE TABLE IF NOT EXISTS constellations (
@@ -74,7 +75,6 @@ CREATE TABLE IF NOT EXISTS core_role_defaults (
 # brand new database (which gets the column from SCHEMA directly) and an
 # existing one from before save profiles existed.
 _MIGRATIONS = [
-    "ALTER TABLE vessels ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
     "ALTER TABLE constellations ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
     "ALTER TABLE constellation_members ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
 ]
@@ -97,6 +97,35 @@ def init_db():
                 conn.execute(statement)
             except sqlite3.OperationalError:
                 pass  # column already exists
+
+        # vessels needs save_profile baked into its PRIMARY KEY (id alone
+        # isn't enough -- two different profiles legitimately have vessels
+        # with the same in-game name). Unlike the ADD COLUMN migrations
+        # above, changing a primary key needs a real table rebuild -- and
+        # unlike core_role_defaults, this table holds real user data
+        # (custom names/notes), so it's copied over rather than dropped.
+        # Confirmed live as a real bug, not theoretical: with the old
+        # single-column PK, switching to a second profile threw "UNIQUE
+        # constraint failed: vessels.id" on every single tick the moment a
+        # vessel with a name already used in another profile was seen
+        # again, silently breaking the vessel list entirely.
+        pk_cols = [row["name"] for row in conn.execute("PRAGMA table_info(vessels)").fetchall() if row["pk"] > 0]
+        if pk_cols != ["id", "save_profile"]:
+            conn.execute("ALTER TABLE vessels RENAME TO vessels_old")
+            conn.execute(
+                "CREATE TABLE vessels ("
+                "id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'unknown', "
+                "notes TEXT DEFAULT '', save_profile TEXT NOT NULL DEFAULT 'default', "
+                "first_seen TEXT NOT NULL DEFAULT (datetime('now')), "
+                "last_seen TEXT NOT NULL DEFAULT (datetime('now')), "
+                "PRIMARY KEY (id, save_profile))"
+            )
+            conn.execute(
+                "INSERT INTO vessels (id, name, type, notes, save_profile, first_seen, last_seen) "
+                "SELECT id, name, type, notes, save_profile, first_seen, last_seen FROM vessels_old"
+            )
+            conn.execute("DROP TABLE vessels_old")
+
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(core_role_defaults)").fetchall()}
         if "save_profile" not in cols:
             conn.execute("DROP TABLE core_role_defaults")

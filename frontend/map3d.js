@@ -178,8 +178,26 @@ function resetView() {
   controls.update();
 }
 
-// positions: Map(name -> {x, y, isMoon}) from app.js's layoutSystem() --
-// (x, y) here is reinterpreted as the (x, z) ground-plane coordinate.
+// positions: Map(name -> {x, y, isMoon, originX, originY, orbitShape}) from
+// app.js's layoutSystem() -- (x, y) here is reinterpreted as the (x, z)
+// ground-plane coordinate. When orbitShape is present (topLevel planets,
+// once /api/system has loaded real orbital elements) the ring is drawn as
+// the body's actual ellipse -- true semi-major axis, eccentricity, and
+// periapsis orientation -- instead of a circle through wherever the body
+// currently sits, which only looks right for a near-circular orbit.
+function ellipseRingPoints(smaScaled, eccentricity, argpDeg) {
+  const segments = 128;
+  const points = [];
+  const argpRad = (argpDeg * Math.PI) / 180;
+  for (let i = 0; i <= segments; i++) {
+    const trueAnomaly = (i / segments) * Math.PI * 2;
+    const r = (smaScaled * (1 - eccentricity * eccentricity)) / (1 + eccentricity * Math.cos(trueAnomaly));
+    const absoluteAngle = argpRad + trueAnomaly;
+    points.push(new THREE.Vector3(r * Math.cos(absoluteAngle), 0, r * Math.sin(absoluteAngle)));
+  }
+  return points;
+}
+
 function setBodies(positions) {
   for (const [name, pos] of positions) {
     if (name === "Sun") continue;
@@ -193,30 +211,54 @@ function setBodies(positions) {
       );
       scene.add(mesh);
 
-      const ringPoints = [];
-      const segments = 128;
-      for (let i = 0; i <= segments; i++) {
-        const a = (i / segments) * Math.PI * 2;
-        ringPoints.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
-      }
-      const ringGeo = new THREE.BufferGeometry().setFromPoints(ringPoints);
+      const ringGeo = new THREE.BufferGeometry();
       const ring = new THREE.Line(ringGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.45 }));
       scene.add(ring);
 
-      entry = { mesh, ring };
+      entry = { mesh, ring, ringKind: null };
       bodyMeshes.set(name, entry);
     }
     entry.mesh.position.set(pos.x, 0, pos.y);
-    const orbitRadius = Math.hypot(pos.x, pos.y) || 0.001;
-    entry.ring.scale.set(orbitRadius, 1, orbitRadius);
+
+    if (pos.orbitShape) {
+      // Real ellipse, centered on the parent body (origin), not on this
+      // body's own position -- an ellipse isn't centered on either focus.
+      const key = `${pos.orbitShape.smaScaled}|${pos.orbitShape.eccentricity}|${pos.orbitShape.argpDeg}`;
+      if (entry.ringKind !== key) {
+        const pts = ellipseRingPoints(pos.orbitShape.smaScaled, pos.orbitShape.eccentricity, pos.orbitShape.argpDeg);
+        entry.ring.geometry.dispose();
+        entry.ring.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+        entry.ringKind = key;
+      }
+      entry.ring.position.set(pos.originX, 0, pos.originY);
+      entry.ring.scale.set(1, 1, 1);
+    } else {
+      // Moons: schematic circle around their parent, as before.
+      if (entry.ringKind !== "circle") {
+        const pts = [];
+        const segments = 128;
+        for (let i = 0; i <= segments; i++) {
+          const a = (i / segments) * Math.PI * 2;
+          pts.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+        }
+        entry.ring.geometry.dispose();
+        entry.ring.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+        entry.ringKind = "circle";
+      }
+      entry.ring.position.set(pos.originX, 0, pos.originY);
+      const orbitRadius = Math.hypot(pos.x - pos.originX, pos.y - pos.originY) || 0.001;
+      entry.ring.scale.set(orbitRadius, 1, orbitRadius);
+    }
   }
 }
 
-// Schematic (not-to-scale) tilted-ellipse placement around the vessel's
-// parent body -- same "log-scaled size, real phase/inclination" approach
-// the old 2D canvas map used, just genuinely tilted out of the ecliptic
-// plane in 3D instead of faking it with a 2D rotation.
-function vesselLocalPosition(telemetry) {
+// Schematic (not-to-scale) tilted-ellipse shape around the vessel's parent
+// body -- log-scaled size (so a LKO hop and an interplanetary orbit are
+// both visible on the same map) but real eccentricity/inclination/phase,
+// tilted genuinely out of the ecliptic plane in 3D rather than faking it
+// with a 2D rotation. Shared by the point-position and full-trajectory-
+// trace functions below so they can never disagree with each other.
+function vesselOrbitShape(telemetry) {
   const apo = Math.max(telemetry.apoapsis_altitude || 0, 0);
   const peri = Math.max(telemetry.periapsis_altitude || 0, 0);
   const avgAlt = (apo + peri) / 2;
@@ -224,14 +266,32 @@ function vesselLocalPosition(telemetry) {
   const ecc = Math.min(Math.max(telemetry.eccentricity || 0, 0), 0.9);
   const semiMinor = semiMajor * Math.sqrt(1 - ecc * ecc);
   const inclinationRad = ((telemetry.inclination_deg || 0) * Math.PI) / 180;
-  const trueAnomalyRad = ((telemetry.true_anomaly_deg || 0) * Math.PI) / 180;
+  return { semiMajor, semiMinor, inclinationRad };
+}
 
-  const flatX = semiMajor * Math.cos(trueAnomalyRad);
-  const flatZ = semiMinor * Math.sin(trueAnomalyRad);
+function tiltedEllipsePoint(shape, trueAnomalyRad) {
+  const flatX = shape.semiMajor * Math.cos(trueAnomalyRad);
+  const flatZ = shape.semiMinor * Math.sin(trueAnomalyRad);
   // Tilt the in-plane Z component out of the ecliptic by inclination.
-  const y = flatZ * Math.sin(inclinationRad);
-  const z = flatZ * Math.cos(inclinationRad);
+  const y = flatZ * Math.sin(shape.inclinationRad);
+  const z = flatZ * Math.cos(shape.inclinationRad);
   return new THREE.Vector3(flatX, y, z);
+}
+
+function vesselLocalPosition(telemetry) {
+  const shape = vesselOrbitShape(telemetry);
+  const trueAnomalyRad = ((telemetry.true_anomaly_deg || 0) * Math.PI) / 180;
+  return tiltedEllipsePoint(shape, trueAnomalyRad);
+}
+
+function vesselTrajectoryPoints(telemetry) {
+  const shape = vesselOrbitShape(telemetry);
+  const segments = 96;
+  const points = [];
+  for (let i = 0; i <= segments; i++) {
+    points.push(tiltedEllipsePoint(shape, (i / segments) * Math.PI * 2));
+  }
+  return points;
 }
 
 function setVessels(vessels) {
@@ -253,13 +313,20 @@ function setVessels(vessels) {
         new THREE.SphereGeometry(0.9, 8, 8),
         new THREE.MeshBasicMaterial({ color: CATEGORY_COLORS[category] }),
       );
+      const trajGeo = new THREE.BufferGeometry();
+      const trajectory = new THREE.Line(
+        trajGeo,
+        new THREE.LineBasicMaterial({ color: CATEGORY_COLORS[category], transparent: true, opacity: 0.55 }),
+      );
       scene.add(mesh);
-      entry = { mesh, category: null };
+      scene.add(trajectory);
+      entry = { mesh, trajectory, category: null, trajKey: null };
       vesselIcons.set(vessel.id, entry);
     }
     if (entry.category !== vessel.type) {
       const category = CATEGORY_COLORS[vessel.type] !== undefined ? vessel.type : "unknown";
       entry.mesh.material.color.setHex(CATEGORY_COLORS[category]);
+      entry.trajectory.material.color.setHex(CATEGORY_COLORS[category]);
       entry.category = vessel.type;
     }
 
@@ -267,12 +334,25 @@ function setVessels(vessels) {
     entry.mesh.position.set(bodyPos.x + local.x, local.y, bodyPos.z + local.z);
     entry.mesh.scale.setScalar(vessel.is_active ? 1.6 : 1.0);
 
+    // Rebuild the trajectory line only when the orbit shape actually
+    // changed (not every tick -- true anomaly alone changing doesn't
+    // change the ellipse, just where on it the vessel sits).
+    const trajKey = `${t.apoapsis_altitude}|${t.periapsis_altitude}|${t.inclination_deg}|${t.eccentricity}`;
+    if (entry.trajKey !== trajKey) {
+      const pts = vesselTrajectoryPoints(t);
+      entry.trajectory.geometry.dispose();
+      entry.trajectory.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+      entry.trajKey = trajKey;
+    }
+    entry.trajectory.position.copy(bodyPos);
+
     hoverTargets.push({ mesh: entry.mesh, vessel });
   }
 
   for (const [id, entry] of vesselIcons) {
     if (!seen.has(id)) {
       scene.remove(entry.mesh);
+      scene.remove(entry.trajectory);
       vesselIcons.delete(id);
     }
   }
