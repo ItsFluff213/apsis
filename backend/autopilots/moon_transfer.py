@@ -8,14 +8,17 @@ KSP-MGA-Planner refuses it ("origin and destination must orbit the same
 body" -- Mun orbits Kerbin, not the Sun, so it's out of that tool's scope
 entirely).
 
-Sequence: wait for the correct transfer window (phase angle between the
-vessel and the target moon), burn to raise apoapsis out to the moon's own
-orbital radius, coast until the moon's gravity actually captures the vessel
-(kRPC's vessel.orbit.body flips to the moon on its own once inside its
-sphere of influence), then circularize at whatever periapsis the arrival
-trajectory produced. Same "approximate, not a precision solver" spirit as
-the rest of this project's maneuver planning -- the phase-angle targeting
-gets you a real capture, not a millimeter-perfect one.
+Sequence: compute (in closed form, see _plan_direct_transfer) the single
+burn -- timing and size -- that sends the vessel directly toward wherever
+the moon will actually be, burn it, coast until the moon's gravity actually
+captures the vessel (kRPC's vessel.orbit.body flips to the moon on its own
+once inside its sphere of influence), run a couple of safety/shaping checks
+on arrival, then circularize and optionally rotate to a target inclination.
+Not a precision solver (it's still a 2-body patched-conic approximation,
+ignoring the moon's own small eccentricity/inclination and any 3-body
+effects), but it's an exact solution *within* that approximation -- one
+calculated burn aimed at an actual future encounter, not a coarse angular
+match followed by hoping the moon's gravity sorts out the rest.
 """
 
 import math
@@ -32,88 +35,94 @@ def _angle_of(position):
     return math.atan2(z, x)
 
 
-def _wait_for_transfer_window(client, vessel, job, parent, moon, max_miss_fraction=0.35, max_synodic_waits=6):
-    """Warps/waits until the vessel's phase relative to the moon matches
-    what's needed so a Hohmann-style transfer arrives when the moon is
-    actually there -- and keeps waiting through additional orbits (as many
-    synodic periods as it takes, up to max_synodic_waits) rather than
-    settling for the first mathematically-close-enough moment.
+def _cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0])
 
-    The old version accepted any window within a flat 0.5 degree angular
-    tolerance, regardless of distance -- at Mun's orbital radius that's a
-    ~100km miss, which is not automatically "clean" relative to a specific
-    moon's actual SOI size. Instead this converts the angular error into an
-    actual predicted miss distance at the moon's orbital radius (arc length
-    approximation, valid for the small angles we're accepting) and requires
-    it to be comfortably inside the moon's own sphere of influence -- with
-    max_miss_fraction as the safety margin (0.35 leaves room for the
-    existing capture-burn fallback to still work if arrival isn't dead
-    center). Since the exact required phase relationship recurs every
-    synodic period in this simplified model, "waiting longer" means holding
-    out for a tighter angular match, not a geometrically different window.
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _norm(a):
+    m = math.sqrt(sum(c * c for c in a)) or 1.0
+    return tuple(c / m for c in a)
+
+
+def _rotate_about_axis(vec, axis, angle):
+    """Rodrigues' rotation formula."""
+    axis = _norm(axis)
+    cos_a, sin_a = math.cos(angle), math.sin(angle)
+    cross_term = _cross(axis, vec)
+    dot_term = _dot(axis, vec) * (1 - cos_a)
+    return tuple(vec[i] * cos_a + cross_term[i] * sin_a + axis[i] * dot_term for i in range(3))
+
+
+def _plan_direct_transfer(client, vessel, job, parent, moon):
+    """Computes the single burn (at the vessel's next periapsis) that sends
+    it directly toward the moon, in closed form -- no search/wait loop.
+
+    Key fact this relies on: a purely prograde burn at periapsis never
+    rotates the orbit's apsis line, so no matter which periapsis passage we
+    burn at or how big the burn is, the resulting apoapsis always lands in
+    the exact same fixed direction in space (opposite the current periapsis
+    direction). That collapses "when do we depart" and "how do we aim" into
+    one simple question: at what future time does the moon's own angular
+    position match that fixed direction? Once we know that arrival time, the
+    exact apoapsis needed to arrive precisely then follows directly from
+    Kepler's third law. One calculation, one burn, no loitering in a wide
+    Kerbin orbit hoping a coarse angular match happens to be close enough --
+    which was the old approach, and why it could end up "aimed somewhere at
+    the moon's orbit" instead of at the moon itself.
     """
     sc = client.space_center
     frame = parent.non_rotating_reference_frame
     mu = parent.gravitational_parameter
+    o = vessel.orbit
 
-    r1 = vessel.orbit.semi_major_axis
-    r2 = moon.orbit.semi_major_axis
-    a_transfer = (r1 + r2) / 2.0
-    transfer_time = math.pi * math.sqrt(a_transfer ** 3 / mu)
+    r_now = vessel.position(frame)
+    v_now = vessel.velocity(frame)
+    normal = _norm(_cross(r_now, v_now))
+    r_hat_now = _norm(r_now)
+    periapsis_hat = _norm(_rotate_about_axis(r_hat_now, normal, -o.true_anomaly))
+    arrival_dir = tuple(-c for c in periapsis_hat)
+    target_angle = _angle_of(arrival_dir)
 
+    moon_angle_now = _angle_of(moon.position(frame))
     moon_rate = 2 * math.pi / moon.orbit.period
-    vessel_rate = 2 * math.pi / vessel.orbit.period
 
-    # At the moment of departure, the moon needs to be far enough ahead
-    # that it arrives at the transfer's arrival point (180 deg around from
-    # departure) exactly when the vessel does.
-    required_phase = (math.pi - moon_rate * transfer_time) % (2 * math.pi)
+    burn_ut = sc.ut + o.time_to_periapsis
+    r_peri = parent.equatorial_radius + o.periapsis_altitude
 
-    def phase_now():
-        vp = vessel.position(frame)
-        mp = moon.position(frame)
-        return (_angle_of(mp) - _angle_of(vp)) % (2 * math.pi)
+    # Nominal Hohmann half-period, used only to pick the most sensible
+    # candidate arrival time among the several that satisfy the angle
+    # match (one every lunar orbit) -- prefer whichever is closest to a
+    # normal transfer duration rather than a wildly fast or slow one.
+    r2 = moon.orbit.semi_major_axis
+    a_nominal = (r_peri + r2) / 2.0
+    nominal_transfer_time = math.pi * math.sqrt(a_nominal ** 3 / mu)
 
-    def signed_error():
-        return (phase_now() - required_phase + math.pi) % (2 * math.pi) - math.pi
+    best = None
+    for k in range(6):
+        angle_needed = (target_angle - moon_angle_now) % (2 * math.pi) + k * 2 * math.pi
+        arrival_ut = sc.ut + angle_needed / moon_rate
+        transfer_time = arrival_ut - burn_ut
+        if transfer_time <= 0:
+            continue
+        new_period = 2 * transfer_time
+        a2 = (mu * new_period ** 2 / (4 * math.pi ** 2)) ** (1.0 / 3.0)
+        r_apo = 2 * a2 - r_peri
+        if r_apo <= r_peri:
+            continue  # degenerate for this k -- not a valid outward transfer
+        score = abs(transfer_time - nominal_transfer_time)
+        if best is None or score < best[0]:
+            best = (score, r_apo)
 
-    relative_rate = vessel_rate - moon_rate  # rad/s the phase closes at (vessel is normally faster/lower)
-    if abs(relative_rate) < 1e-9:
-        return  # degenerate (shouldn't happen for a real parking orbit vs. a real moon)
+    if best is None:
+        raise ValueError(f"could not find a valid direct transfer window to {moon.name}")
 
-    synodic_period = (2 * math.pi) / abs(relative_rate)
-    max_miss_m = moon.sphere_of_influence * max_miss_fraction
-    max_angle_err = max_miss_m / r2  # small-angle: miss distance ~= r2 * angle error
-
-    job.message = f"waiting for transfer window to {moon.name}"
-    synodic_waits = 0
-    while True:
-        # Warp most of the way there based on the current estimate, then
-        # fine-tune with short waits close in -- avoids both a razor-
-        # precision closed-form wait (fragile) and a slow real-time crawl.
-        for _ in range(200):
-            job.check_abort()
-            err = signed_error()
-            if abs(err) < max_angle_err:
-                return
-            dt = err / relative_rate
-            if dt < 0:
-                dt += synodic_period
-            if dt > 20:
-                sc.warp_to(sc.ut + dt - 15)
-                job.sleep(0.5)
-            else:
-                job.sleep(0.2)
-        # Shouldn't normally fall out of the inner loop (it only exits via
-        # the abs(err) check), but if the closed-form dt estimate keeps
-        # overshooting for some reason, don't spin forever -- push forward
-        # by a full synodic period and try converging again, up to
-        # max_synodic_waits times.
-        synodic_waits += 1
-        if synodic_waits >= max_synodic_waits:
-            job.message = f"could not find a clean transfer window to {moon.name} in time, using best available"
-            return
-        sc.warp_to(sc.ut + synodic_period)
+    target_apoapsis_m = best[1] - parent.equatorial_radius
+    job.message = f"burning for direct {moon.name} intercept"
+    return maneuver.change_apoapsis_node(client, vessel, target_apoapsis_m, burn_at="periapsis")
 
 
 def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target_inclination_deg=None):
@@ -152,11 +161,7 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
             f"here if you want a polar (or any other inclined) orbit around {moon.name} itself."
         )
 
-    _wait_for_transfer_window(client, vessel, job, parent, moon)
-
-    job.message = f"burning for {moon.name} transfer"
-    target_apoapsis_m = moon.orbit.semi_major_axis - parent.equatorial_radius
-    node = maneuver.change_apoapsis_node(client, vessel, target_apoapsis_m, burn_at="periapsis")
+    node = _plan_direct_transfer(client, vessel, job, parent, moon)
     maneuver.execute_node(client, vessel, job, node)
 
     job.message = f"coasting to {moon.name}"
