@@ -17,6 +17,16 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
         sc.active_vessel = vessel
         job.sleep(0.5)
 
+    # A previous job (e.g. a moon-transfer's coast phase) can leave the
+    # game time-warping when it ends -- confirmed live: a launch silently
+    # sat on the pad at full commanded throttle while rails-warping at
+    # 50x, since physics doesn't run normally under warp. Force back to
+    # real time before doing anything else.
+    if sc.rails_warp_factor != 0 or sc.physics_warp_factor != 0:
+        sc.rails_warp_factor = 0
+        sc.physics_warp_factor = 0
+        job.sleep(1.0)
+
     ap = vessel.auto_pilot
     control = vessel.control
     control.sas = False
@@ -56,21 +66,21 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
             if vessel.available_thrust < 0.1 and control.current_stage not in fired_stages:
                 stage_num = control.current_stage
 
-                # Cut throttle for the actual separation instant, and hold
-                # whatever attitude the vessel is at right now rather than
-                # letting the autopilot keep chasing the ascent's live
-                # turn-angle target through it. Reported live: staging was
-                # making the rocket "very unstable". Full throttle through
-                # the exact moment of decoupling maximizes any plume
-                # impingement / collision torque against the departing
-                # stage, and a sudden CoM/moment-of-inertia shift right as
-                # the autopilot is also mid-correction toward a still-
-                # moving target is a textbook way to kick off a PID
-                # overshoot/oscillation. Real multi-stage rockets briefly
-                # cut thrust across separation for the same reason.
+                # Cut throttle for the actual separation instant -- full
+                # throttle through the exact moment of decoupling maximizes
+                # any plume impingement / collision torque against the
+                # departing stage. Deliberately NOT touching the autopilot's
+                # target here (first version of this fix read live
+                # flight.pitch/flight.heading to "hold current attitude",
+                # which caused a hard ~180 degree flip: heading is only
+                # meaningful when not pointed near-vertical, and a rocket is
+                # still near pitch=90 for its first stage or two -- reading
+                # heading right there can return a near-arbitrary value,
+                # and commanding the autopilot to chase that produced
+                # exactly the flip-then-wobble-then-wasted-dv reported
+                # live). The already-well-defined turn-angle target stays
+                # in effect throughout; only the throttle is touched.
                 control.throttle = 0.0
-                hold_pitch, hold_heading = flight.pitch, flight.heading
-                ap.target_pitch_and_heading(hold_pitch, hold_heading)
 
                 tagged = decouplers_by_stage.get(stage_num)
                 if tagged:
@@ -90,13 +100,20 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
                 fired_stages.add(stage_num)
                 job.message = f"staged (stage {stage_num})"
 
-                # Give the new stage a moment to physically settle (engine
-                # spooling up, any wobble from the split-second above
-                # damping out) before committing back to full thrust and
-                # the live steering target.
-                job.sleep(0.4)
+                # Wait for the autopilot to actually confirm it's still on
+                # target (ap.error small) before committing back to full
+                # thrust, rather than a fixed delay -- a fixed pause can
+                # restore full throttle while still meaningfully off-target
+                # (e.g. from the CoM/moment-of-inertia shift at separation),
+                # which just burns hard in a wrong direction and wastes dv.
+                # Capped so a genuinely stuck autopilot doesn't stall the
+                # ascent forever.
+                settle_elapsed = 0.0
+                while ap.error > 5 and settle_elapsed < 3.0:
+                    job.check_abort()
+                    job.sleep(0.1)
+                    settle_elapsed += 0.1
                 control.throttle = 1.0
-                ap.target_pitch_and_heading(90 - turn_angle, 90 - target_inclination_deg)
 
                 # If a piece actually separated (a new vessel genuinely
                 # appeared) and it still has engines/fuel of its own (e.g.
