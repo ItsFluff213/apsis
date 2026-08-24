@@ -166,6 +166,20 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
         job.check_abort()
         job.sleep(1)
 
+    # Safety check, before anything else: the phase-angle transfer only
+    # controls WHEN the vessel arrives relative to the moon, not the exact
+    # closest-approach distance (that needs real 3D targeting this simple
+    # model doesn't do). A "clean" phase match could still line up a
+    # near-direct hit on the moon's surface -- we want a slingshot/capture
+    # around it, never straight into it. periapsis_altitude is well-defined
+    # even for a hyperbolic flyby (unlike apoapsis), so check it the moment
+    # SOI entry is detected, well before actually reaching that periapsis.
+    min_safe_periapsis_m = max(target_periapsis_m * 0.5, moon.equatorial_radius * 0.05)
+    if vessel.orbit.periapsis_altitude < min_safe_periapsis_m:
+        job.message = f"correcting course -- raw arrival would pass too close to {moon.name}"
+        node = maneuver.raise_periapsis_now(client, vessel, min_safe_periapsis_m * 1.5)
+        maneuver.execute_node(client, vessel, job, node)
+
     # A phase-angle Hohmann-style transfer aims for a capture, but doesn't
     # precisely target a bound arrival -- entering the moon's SOI is often
     # still a HYPERBOLIC flyby (eccentricity >= 1), not an actual capture,

@@ -62,6 +62,27 @@ def change_periapsis_node(client, vessel, target_periapsis_m, burn_at="apoapsis"
     return vessel.control.add_node(ut, prograde=v2 - v1)
 
 
+def raise_periapsis_now(client, vessel, target_periapsis_m, lead_time=1.0):
+    """Emergency version of change_periapsis_node for when there's no time
+    to wait for an actual apoapsis: burns prograde right at the vessel's
+    current position instead. This only cleanly targets the periapsis
+    altitude if fired close to the current apoapsis, but as a collision-
+    avoidance correction (raise periapsis NOW, imprecisely, rather than
+    arrive at the real apoapsis after already flying too close to impact)
+    an approximate raise beats letting the low point stand. Caller should
+    still follow up with a proper change_periapsis_node at the real
+    apoapsis once there's time to."""
+    sc = client.space_center
+    body = vessel.orbit.body
+    mu = body.gravitational_parameter
+    r = math.sqrt(sum(c * c for c in vessel.position(body.reference_frame)))
+    a1 = vessel.orbit.semi_major_axis
+    a2 = (r + body.equatorial_radius + target_periapsis_m) / 2.0
+    v1 = vis_viva_speed(mu, r, a1)
+    v2 = vis_viva_speed(mu, r, a2)
+    return vessel.control.add_node(sc.ut + lead_time, prograde=v2 - v1)
+
+
 def change_apoapsis_node(client, vessel, target_apoapsis_m, burn_at="periapsis"):
     """Adds a node (burned at the next periapsis or apoapsis) that changes
     the apoapsis altitude to the given value, leaving the other apsis
