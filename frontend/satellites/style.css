@@ -1,0 +1,38 @@
+/* Styles specific to the standalone satellites page.
+   The shared look comes from ../style.css; this file only adds what the
+   standalone framing needs, so the same app.js renders identically whether
+   embedded as a dashboard tab or served on its own at /satellites/. */
+
+.standalone-satellites .page-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
+.standalone-satellites .page-header h1 {
+  font-size: 20px;
+  margin: 0;
+}
+
+.standalone-satellites .subtle {
+  color: var(--dim);
+  font-weight: 400;
+}
+
+.standalone-satellites .back-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.standalone-satellites .back-link:hover {
+  text-decoration: underline;
+}
+
+/* Embedded in the dashboard the tab header supplies this spacing already. */
+.standalone-satellites main {
+  display: block;
+}

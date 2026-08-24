@@ -56,18 +56,25 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 
 
 if __name__ == "__main__":
+    import os
     import sys
     import threading
     import webbrowser
 
     import uvicorn
 
+    # Port is overridable so a second instance can run alongside a first
+    # (handy when testing, or when something else already holds 8000).
+    # Defaults to 8000, which is what the README and the packaged exe
+    # assume.
+    port = int(os.environ.get("APSIS_PORT", "8000"))
+
     # When double-clicked as a packaged exe there's no terminal history to
     # scroll back through and no way to know it worked besides the console
     # window it opens -- open the dashboard automatically and say so
     # plainly, rather than leaving a first-time user staring at log lines.
     if getattr(sys, "frozen", False):
-        threading.Timer(1.5, lambda: webbrowser.open("http://localhost:8000")).start()
+        threading.Timer(1.5, lambda: webbrowser.open(f"http://localhost:{port}")).start()
         print("Apsis is starting -- opening the dashboard in your browser...")
         print("Leave this window open while you use the dashboard. Close it to stop Apsis.")
 
@@ -77,4 +84,4 @@ if __name__ == "__main__":
     # __main__ -- built a second, never-connected KRPCClient/registry whose
     # router handlers silently shadowed the real ones. Passing the object
     # avoids the double import entirely.
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=port)

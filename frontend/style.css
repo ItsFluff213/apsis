@@ -41,12 +41,12 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
 .subtitle { color: var(--dim); margin: 0 0 var(--sp-4); font-size: 13px; }
 
 /* Shared component styles -- every panel/field/button in the dashboard
-   (the profile bar, constellation forms, interplanetary panel, moon
+   (the profile bar, constellation forms, transfer controls, moon
    transfer controls, sync bar, ascent forms, ...) opts into these instead
    of redeclaring the same colors/radii/padding, so a look change here
    applies everywhere at once and new controls match by default. */
 .panel,
-.map-overview, .constellations-panel, .interplanetary-panel {
+.map-overview, .constellations-panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -54,14 +54,15 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
   margin-bottom: var(--sp-5);
 }
 .panel-header,
-.map-header, .constellations-header, .interplanetary-header {
+.map-header, .constellations-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: var(--sp-2);
 }
 .panel-header h2,
-.map-header h2, .constellations-header h2, .interplanetary-header h2 { font-size: 15px; margin: 0; }
+.map-header h2, .constellations-header h2 { font-size: 15px; margin: 0; }
+.constellations-header h3 { font-size: 15px; margin: 0; }
 
 .field {
   background: var(--bg-well);
@@ -116,8 +117,6 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
 .edit-orbit-form button,
 .ascent-form button,
 .group-constellation button,
-.group-interplanetary button,
-.interplanetary-actions button,
 .group-moon-transfer button,
 .parts-panel button {
   background: var(--accent);
@@ -137,7 +136,6 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
   color: var(--dim);
   border: 1px solid var(--border);
 }
-.group-interplanetary button:disabled { background: var(--border); color: var(--dim); cursor: not-allowed; }
 
 #conn-status {
   display: inline-block;
@@ -186,70 +184,18 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
   font-weight: 600;
 }
 
-.placeholder-note {
-  background: var(--panel);
-  border: 1px dashed var(--border);
-  border-radius: 10px;
-  padding: 24px;
-  text-align: center;
-  color: var(--dim);
-  font-size: 13px;
-}
 
-/* Tab visibility rules: default (overview) shows everything.
-   Each tab now shows only the one control it actually needs, per craft:
-     Satellites -- only Deploy (constellation assignment already implies
-       the target orbit; no manual launch/land/return controls belong here).
-     Landing -- only a waypoint select + Land, and only for landers.
-     Launch/Booster Landing -- Launch controls for a craft still on the
-       surface, OR Return-to-KSC for a booster currently away from the pad
-       (never both on the same craft, decided live via data-grounded/
-       data-role-booster set in updateCard()). */
-body[data-tab="satellites"] .category-section:not(.category-satellite) { display: none !important; }
-body[data-tab="satellites"] .group-ascent,
-body[data-tab="satellites"] .group-landing,
-body[data-tab="satellites"] .group-return,
-body[data-tab="satellites"] .group-parts { display: none; }
 
-body[data-tab="landing"] .category-section:not(.category-lander) { display: none !important; }
-body[data-tab="landing"] .group-ascent,
-body[data-tab="landing"] .group-return,
-body[data-tab="landing"] .group-parts,
-body[data-tab="landing"] .group-constellation { display: none; }
+/* Tab visibility used to be done here, with a block of
+   `body[data-tab="x"] .group-y { display: none }` rules hiding the control
+   groups that didn't belong to the current tab -- because every vessel card
+   contained every tab's controls. Tabs now mount their own DOM and build
+   only the controls they need (see frontend/tabs/), so those rules are gone
+   along with the problem they patched over.
 
-body[data-tab="launch"] .group-landing,
-body[data-tab="launch"] .group-parts,
-body[data-tab="launch"] .group-constellation { display: none; }
-body[data-tab="launch"] .ascent-form,
-body[data-tab="launch"] .group-return { display: none; }
-body[data-tab="launch"] .vessel-card[data-grounded="true"] .ascent-form { display: flex; }
-body[data-tab="launch"] .vessel-card[data-role-booster="true"][data-grounded="false"] .group-return { display: flex; }
-/* Only show a craft here at all if it's actually launchable or a booster
-   away from the pad -- anything else (deployed satellites, landed landers,
-   stations, etc.) doesn't belong on this tab. */
-body[data-tab="launch"] .vessel-card { display: none; }
-body[data-tab="launch"] .vessel-card[data-grounded="true"],
-body[data-tab="launch"] .vessel-card[data-role-booster="true"][data-grounded="false"] { display: block; }
-
-body[data-tab="docking"] .map-overview,
-body[data-tab="docking"] #vessels { display: none; }
-
-/* Interplanetary tab: hide anything already assigned to a satellite
-   constellation (that's the Satellites tab's job) -- this tab is for
-   free-flying probes/craft carrying out a manually-planned transfer. */
-body[data-tab="interplanetary"] .vessel-card[data-in-constellation="true"] { display: none; }
-body[data-tab="interplanetary"] .group-ascent,
-body[data-tab="interplanetary"] .group-landing,
-body[data-tab="interplanetary"] .group-return,
-body[data-tab="interplanetary"] .group-constellation,
-body[data-tab="interplanetary"] .group-parts { display: none; }
-.group-interplanetary, .group-moon-transfer { display: none; }
-body[data-tab="interplanetary"] .group-interplanetary,
-body[data-tab="interplanetary"] .group-moon-transfer { display: flex; }
-
-.constellations-panel { display: none; }
-body[data-tab="satellites"] .constellations-panel { display: block; }
-
+   The overview rules below stay: they are genuine presentation, turning the
+   cards into a compact thumbnail grid with details on hover, not visibility
+   logic standing in for structure. */
 /* Overview tab: one compact row per role, top to bottom, pure information
    plus the one control that's always safe to keep reachable here -- the
    role selector -- since changing a craft's role on a category-filtered
@@ -319,54 +265,6 @@ body[data-tab="overview"] .vessel-card:hover .vessel-detail {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
-.interplanetary-panel { display: none; }
-body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
-.interplanetary-hint {
-  font-size: 12px;
-  color: var(--dim);
-  margin: 0 0 10px;
-  line-height: 1.5;
-}
-.interplanetary-hint a { color: var(--accent); }
-#ip-plan-text {
-  width: 100%;
-  height: 140px;
-  background: var(--bg-well);
-  border: 1px solid var(--border);
-  color: var(--text);
-  border-radius: 6px;
-  padding: 8px;
-  font-size: 11px;
-  font-family: ui-monospace, "Cascadia Mono", monospace;
-  resize: vertical;
-}
-.interplanetary-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-}
-#ip-parse-status { font-size: 12px; }
-#ip-parse-status.ok { color: var(--good); }
-#ip-parse-status.bad { color: var(--bad); }
-.interplanetary-preview {
-  margin-top: 12px;
-  font-size: 12px;
-  max-height: 260px;
-  overflow-y: auto;
-}
-.interplanetary-preview .ip-sequence { color: var(--accent); font-weight: 600; margin-bottom: 6px; }
-.interplanetary-preview table { width: 100%; border-collapse: collapse; }
-.interplanetary-preview th, .interplanetary-preview td {
-  text-align: left;
-  padding: 3px 8px 3px 0;
-  border-bottom: 1px solid var(--border);
-  color: var(--dim);
-}
-.interplanetary-preview td:first-child { color: var(--text); }
-
-.group-interplanetary button { margin-top: 8px; }
-
 .constellations-list {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -595,3 +493,147 @@ body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
 }
 .job-status.done { color: var(--good); }
 .job-status.error, .job-status.aborted { color: var(--bad); }
+
+/* ---------------------------------------------------------------------
+   Rebuilt dashboard structure (see frontend/main.js and frontend/tabs/).
+   Tabs mount their own DOM, so these describe real components rather than
+   hiding parts of a shared card.
+   --------------------------------------------------------------------- */
+
+.page-header { margin-bottom: 4px; }
+.page-header h1 { margin-bottom: 2px; }
+
+.tab-intro { margin-bottom: 14px; }
+.tab-intro h2 { font-size: 17px; margin: 0 0 4px; }
+.tab-intro .hint { margin: 0; max-width: 70ch; }
+
+.hint {
+  font-size: 12px;
+  color: var(--dim);
+  line-height: 1.5;
+}
+.hint code, .tab-intro code {
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 11px;
+}
+
+.section-heading {
+  font-size: 14px;
+  margin: 22px 0 10px;
+  color: var(--text);
+}
+
+.empty-note {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+/* Cards laid out by the tab that owns them, rather than by a global rule. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 12px;
+}
+
+.vessel-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* One row per logical action, wrapping on narrow cards. */
+.control-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.control-group .group-label {
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  min-width: 64px;
+}
+.control-group input,
+.control-group select {
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 4px 6px;
+  font-size: 12px;
+  min-width: 0;
+  flex: 1 1 90px;
+}
+.control-group button { flex: 0 0 auto; }
+.control-group button.primary { background: var(--accent); color: #08111c; font-weight: 600; }
+.control-group button.abort { background: var(--bad); color: #180a0a; }
+.control-group button:disabled {
+  background: var(--border);
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+.ghost-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ghost-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Transfer preview: replaces the old pasted-plan table. */
+.transfer-preview {
+  background: var(--bg-well);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.preview-title { color: var(--accent); font-weight: 600; margin-bottom: 6px; }
+.preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 2px 12px;
+}
+.transfer-preview .hint { margin: 8px 0 0; }
+
+.dim { color: var(--dim); }
+.bad { color: var(--bad); }
+.ok { color: var(--good); }
+
+.job-status.error { color: var(--bad); }
+
+.ksp-name { font-size: 11px; color: var(--dim); margin-bottom: 6px; }
+
+.parts-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  margin: 8px 0;
+}
+.part-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.part-title { flex: 1; color: var(--text); }
+.part-tag { color: var(--accent); }
+
+.vessel-name-static { font-weight: 600; flex: 1; }

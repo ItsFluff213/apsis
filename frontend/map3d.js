@@ -45,6 +45,11 @@ const BODY_COLORS = {
 const DEFAULT_BODY_COLOR = 0x9aa4bf;
 
 let scene, camera, renderer, controls, container;
+// The map is built lazily, when the Overview tab first mounts its
+// container -- so every public entry point has to tolerate being called
+// before that has happened (another tab polling telemetry, say).
+let ready = false;
+let resizeObserver = null;
 let sunMesh;
 const bodyMeshes = new Map(); // name -> {mesh, ring}
 const vesselIcons = new Map(); // vessel id -> {mesh}
@@ -55,7 +60,9 @@ const pointer = new THREE.Vector2();
 let lastPointerEvent = null;
 let lastVesselList = [];
 
-const tooltipEl = document.getElementById("map-tooltip");
+// Resolved in init(), not at module load: like the canvas container, this
+// element belongs to the Overview tab and doesn't exist until it mounts.
+let tooltipEl = null;
 
 function fmt(n, digits = 0) {
   if (n === undefined || n === null || Number.isNaN(n)) return "-";
@@ -83,8 +90,43 @@ function measure() {
   return { width, height, valid: width > 0 && height > 0 };
 }
 
+/**
+ * Move the existing renderer into a freshly-created container.
+ *
+ * The Overview tab is unmounted when you switch away, which clears its DOM
+ * -- taking the canvas with it -- and mounts a brand new container element
+ * when you come back. Rebuilding the whole scene each time would be
+ * wasteful and would lose the camera position, so the renderer is kept and
+ * simply re-parented. Without this the map silently vanished for good
+ * after the first tab switch: init() saw `ready` and returned early, so
+ * nothing ever put the canvas back.
+ */
+function reattach(element) {
+  container = element;
+  tooltipEl = document.getElementById("map-tooltip");
+  element.appendChild(renderer.domElement);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver.observe(element);
+  }
+  onResize();
+}
+
 function init() {
-  container = document.getElementById("map3d-container");
+  const element = document.getElementById("map3d-container");
+  // The map lives inside the Overview tab, which is mounted on demand, so
+  // this can legitimately be called before the container exists. Report
+  // failure instead of throwing; the caller retries once the tab mounts.
+  if (!element) return false;
+
+  if (ready) {
+    if (element !== container) reattach(element);
+    return true;
+  }
+
+  container = element;
+  tooltipEl = document.getElementById("map-tooltip");
+
   // Fall back only for the very first frame, when the element may not be
   // laid out yet; the ResizeObserver corrects it as soon as it is.
   const { width: w0, height: h0, valid } = measure();
@@ -146,12 +188,15 @@ function init() {
   // browser zoom changing. A window-resize listener catches only the first
   // of those.
   if (typeof ResizeObserver !== "undefined") {
-    new ResizeObserver(onResize).observe(container);
+    resizeObserver = new ResizeObserver(onResize);
+    resizeObserver.observe(container);
   } else {
     window.addEventListener("resize", onResize);
   }
 
+  ready = true;
   animate();
+  return true;
 }
 
 function onResize() {
@@ -208,6 +253,8 @@ function animate() {
 }
 
 function resetView() {
+  if (!ready) return;
+
   camera.position.set(0, 220, 320);
   controls.target.set(0, 0, 0);
   controls.update();
@@ -234,6 +281,8 @@ function ellipseRingPoints(smaScaled, eccentricity, argpDeg) {
 }
 
 function setBodies(positions) {
+  if (!ready) return;
+
   for (const [name, pos] of positions) {
     if (name === "Sun") continue;
     let entry = bodyMeshes.get(name);
@@ -346,6 +395,8 @@ function vesselTrajectoryPoints(telemetry) {
 }
 
 function setVessels(vessels) {
+  if (!ready) { lastVesselList = vessels; return; }
+
   lastVesselList = vessels;
   const seen = new Set();
   hoverTargets = [];
@@ -424,6 +475,8 @@ let transferPreview = null; // {line, marker}
 // far end if the underlying math is correct, which is the whole point of
 // showing this before committing to the actual burn).
 function showTransferPreview(parentBodyName, points, arrivalMarker) {
+  if (!ready) return;
+
   clearTransferPreview();
   const bodyEntry = bodyMeshes.get(parentBodyName);
   const origin = bodyEntry ? bodyEntry.mesh.position : new THREE.Vector3(0, 0, 0);
@@ -453,5 +506,14 @@ function clearTransferPreview() {
   transferPreview = null;
 }
 
-window.Map3D = { init, setBodies, setVessels, resetView, showTransferPreview, clearTransferPreview };
+// Built lazily rather than on script load: the container belongs to the
+// Overview tab, which mounts on demand. isReady() lets the tab decide
+// whether it still needs to call init().
+window.Map3D = {
+  init, isReady: () => ready,
+  setBodies, setVessels, resetView, showTransferPreview, clearTransferPreview,
+};
+
+// Try once now in case the container already exists (it does when the
+// Overview tab is the default), and leave it to the tab otherwise.
 init();

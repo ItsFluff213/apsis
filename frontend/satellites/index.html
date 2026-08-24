@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Apsis -- Satellite Constellations</title>
+  <link rel="stylesheet" href="../style.css" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="standalone-satellites">
+  <!--
+    Standalone entry point for the satellites view, served at /satellites/.
+
+    The same module also runs embedded as a tab in the main dashboard. The
+    only difference is the `standalone: true` flag below, which tells it to
+    open its own telemetry websocket rather than sharing the dashboard's.
+    Nothing else about the view changes, and nothing in it imports from the
+    dashboard -- so this page can be lifted out with core/ and served on its
+    own without touching the backend.
+  -->
+  <header class="page-header">
+    <h1>Apsis <span class="subtle">Satellites</span> <span id="conn-status" class="bad">connecting...</span></h1>
+    <a class="back-link" href="/">&larr; Full dashboard</a>
+  </header>
+
+  <main id="satellites-root"></main>
+
+  <script type="module">
+    import * as satellites from "./app.js";
+    import { subscribeConnection } from "../core/telemetry.js";
+
+    const statusEl = document.getElementById("conn-status");
+    const LABELS = {
+      connecting: ["connecting...", "bad"],
+      open: ["connected to KSP", "ok"],
+      "waiting-for-ksp": ["waiting for KSP (start the game + kRPC server)", "bad"],
+      closed: ["disconnected, retrying...", "bad"],
+    };
+    subscribeConnection((state) => {
+      const [text, cls] = LABELS[state] || [state, ""];
+      statusEl.textContent = text;
+      statusEl.className = cls;
+    });
+
+    satellites.mount(document.getElementById("satellites-root"), { standalone: true });
+  </script>
+</body>
+</html>
