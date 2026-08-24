@@ -9,6 +9,39 @@ from backend import parts
 from backend.autopilots import maneuver
 
 
+def _stage_has_fuel(vessel, stage_num):
+    """True if the given stage's parts still hold meaningful propellant.
+    available_thrust hitting 0 already implies the *active* engine is dry,
+    but this double-checks against the actual resources in that stage
+    (not just the engine's current draw) before we let go of it -- staging
+    should only ever drop a stage once it's genuinely empty, not just
+    once the currently-firing engine happens to read no thrust."""
+    try:
+        res = vessel.resources_in_decouple_stage(stage_num, cumulative=False)
+        for name in ("LiquidFuel", "Oxidizer", "SolidFuel"):
+            if name in res.names and res.amount(name) > 0.1:
+                return False
+        return True
+    except Exception:
+        return True  # can't tell -- don't block staging on an unknown
+
+
+def _efficient_throttle(flight, atmosphere_depth):
+    """Caps throttle (never raises it) to avoid needlessly overspeeding in
+    the thick lower atmosphere, where excess speed just burns extra fuel
+    fighting aerodynamic drag rather than buying orbital energy. A simple
+    "altitude/10" speed guideline (a well-known practical rule of thumb
+    for stock aero, not a rigorous optimal-control solution) -- fine
+    above the atmosphere or once already slower than the limit."""
+    if not atmosphere_depth or flight.mean_altitude >= atmosphere_depth:
+        return 1.0
+    speed_limit = max(flight.mean_altitude / 10.0, 100.0)
+    if flight.speed <= speed_limit:
+        return 1.0
+    overspeed_frac = (flight.speed - speed_limit) / speed_limit
+    return max(0.4, 1.0 - overspeed_frac)
+
+
 def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, target_inclination_deg=0.0,
                turn_start_altitude_m=250, turn_end_altitude_m=45000):
     sc = client.space_center
@@ -39,6 +72,7 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
 
     body = vessel.orbit.body
     flight = vessel.flight(body.reference_frame)
+    atmosphere_depth = body.atmosphere_depth
     turn_angle = 0
 
     decouplers_by_stage = parts.get_decouplers_by_stage(vessel)
@@ -60,10 +94,16 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
             elif altitude >= turn_end_altitude_m:
                 ap.target_pitch_and_heading(0, 90 - target_inclination_deg)
 
-            # Auto-staging: if current stage has no engines with remaining
-            # thrust/fuel, decouple/activate the next stage. Prefer a
-            # tagged decoupler for the current stage number if one exists.
-            if vessel.available_thrust < 0.1 and control.current_stage not in fired_stages:
+            control.throttle = _efficient_throttle(flight, atmosphere_depth)
+
+            # Auto-staging: only once the current stage has neither thrust
+            # nor any meaningful propellant left in it -- not just once
+            # the currently-firing engine happens to read no thrust, but
+            # confirmed against the stage's actual remaining resources
+            # too (see _stage_has_fuel). Prefer a tagged decoupler for the
+            # current stage number if one exists.
+            if (vessel.available_thrust < 0.1 and not _stage_has_fuel(vessel, control.current_stage)
+                    and control.current_stage not in fired_stages):
                 stage_num = control.current_stage
 
                 # Cut throttle for the actual separation instant -- full
@@ -95,7 +135,6 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
                             # fires the stage's actual staging action
                             # regardless.
                             pass
-                names_before = {v.name for v in sc.vessels}
                 control.activate_next_stage()
                 fired_stages.add(stage_num)
                 job.message = f"staged (stage {stage_num})"
@@ -113,33 +152,7 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
                     job.check_abort()
                     job.sleep(0.1)
                     settle_elapsed += 0.1
-                control.throttle = 1.0
-
-                # If a piece actually separated (a new vessel genuinely
-                # appeared) and it still has engines/fuel of its own (e.g.
-                # a spent booster that's going to fly a return-to-KSC
-                # autopilot job), actively burn clear of it now rather than
-                # coasting right next to it. available_thrust alone can't
-                # tell "something separated with thrust" apart from "this
-                # activate_next_stage() call was just the first ignition of
-                # our own engine" -- confirmed live: an empty stage ahead of
-                # the real engine had the debris-clear burn (throttle 0.6)
-                # misfire right at its ignition, since the engine lighting
-                # up also makes available_thrust go from 0 to nonzero.
-                job.sleep(0.3)
-                separated = bool({v.name for v in sc.vessels} - names_before)
-                if separated and vessel.available_thrust > 0.1:
-                    maneuver.burn_away_from_debris(client, vessel, job)
-                    # burn_away_from_debris always zeroes throttle in its
-                    # own cleanup (correct for its other callers, which
-                    # either land or move on to a separate burn right
-                    # after) -- but here the ascent itself is still
-                    # supposed to be under full thrust, so it must be
-                    # explicitly restored. Confirmed live: without this,
-                    # the engine silently stayed at 0% for the rest of the
-                    # "ascent" and the rocket fell back to the pad.
-                    control.throttle = 1.0
-                    ap.target_pitch_and_heading(90 - turn_angle, 90 - target_inclination_deg)
+                control.throttle = _efficient_throttle(flight, atmosphere_depth)
 
             if apoapsis >= target_apoapsis_m:
                 job.message = "target apoapsis reached, coasting to space"
@@ -155,7 +168,6 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
         control.throttle = 0.0
 
     # Coast out of the atmosphere if still inside it.
-    atmosphere_depth = body.atmosphere_depth
     if atmosphere_depth and flight.mean_altitude < atmosphere_depth:
         job.message = "coasting through atmosphere"
         while flight.mean_altitude < atmosphere_depth:
