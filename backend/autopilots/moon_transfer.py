@@ -288,6 +288,56 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
     node = _plan_direct_transfer(client, vessel, job, parent, moon)
     maneuver.execute_node(client, vessel, job, node)
 
+    # Mid-course correction: any real burn takes actual time to execute
+    # (not the idealized instant impulse the closed-form plan assumes),
+    # and small drift accumulates over a coast this long -- reported live
+    # as "the calculation is always a little off". Rather than trying to
+    # force the very first burn to be perfect (impossible in practice),
+    # use the coast itself: partway to the encounter, re-derive the ideal
+    # apoapsis from the vessel's actual current trajectory (not the
+    # original plan) and nudge toward it if it's drifted. Same idea Apollo
+    # used -- a planned correction burn, not a single all-or-nothing shot.
+    frame = parent.non_rotating_reference_frame
+    r_now = vessel.position(frame)
+    v_now = vessel.velocity(frame)
+    normal_now = _norm(_cross(r_now, v_now))
+    r_hat_now = _norm(r_now)
+    periapsis_hat_now = _norm(_rotate_about_axis(r_hat_now, normal_now, -vessel.orbit.true_anomaly))
+    arrival_dir = tuple(-c for c in periapsis_hat_now)
+    target_angle = _angle_of(arrival_dir)
+
+    halfway_ut = sc.ut + vessel.orbit.time_to_apoapsis / 2.0
+    if halfway_ut - sc.ut > 30:
+        job.message = f"coasting to {moon.name} (correction point ahead)"
+        sc.warp_to(halfway_ut - 10)
+        while sc.ut < halfway_ut:
+            job.check_abort()
+            job.sleep(0.2)
+
+        job.message = f"checking course toward {moon.name}"
+        mu = parent.gravitational_parameter
+        moon_angle_now = _angle_of(moon.position(frame))
+        moon_rate = 2 * math.pi / moon.orbit.period
+        r_peri = parent.equatorial_radius + vessel.orbit.periapsis_altitude
+
+        angle_needed = (target_angle - moon_angle_now) % (2 * math.pi)
+        ideal_arrival_ut = sc.ut + angle_needed / moon_rate
+        ideal_transfer_time = ideal_arrival_ut - sc.ut
+        # Solve for the semi-major axis whose remaining time-to-apoapsis
+        # from here matches ideal_transfer_time, treating "now" as
+        # approximately a fresh periapsis-side reference -- reasonable
+        # since the correction point was deliberately chosen as the
+        # halfway mark, so "half the new period remaining" is a sound
+        # approximation here the same way it was for the original burn.
+        a_target = (mu * (2 * max(ideal_transfer_time, 1.0)) ** 2 / (4 * math.pi ** 2)) ** (1.0 / 3.0)
+        r_apo_target = 2 * a_target - r_peri
+        current_apo = parent.equatorial_radius + vessel.orbit.apoapsis_altitude
+        drift = abs(r_apo_target - current_apo)
+        if drift > moon.sphere_of_influence * 0.1 and r_apo_target > r_peri:
+            job.message = f"mid-course correction toward {moon.name}"
+            node = maneuver.adjust_other_apsis_now(client, vessel, r_apo_target - parent.equatorial_radius)
+            maneuver.execute_node(client, vessel, job, node)
+
     job.message = f"coasting to {moon.name}"
     # Warp in bounded chunks, watching actual live distance to the moon,
     # instead of one single warp_to based on the Kerbin-orbit apoapsis
@@ -331,7 +381,7 @@ def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target
     min_safe_periapsis_m = max(target_periapsis_m * 0.5, moon.equatorial_radius * 0.05)
     if vessel.orbit.periapsis_altitude < min_safe_periapsis_m:
         job.message = f"correcting course -- raw arrival would pass too close to {moon.name}"
-        node = maneuver.raise_periapsis_now(client, vessel, min_safe_periapsis_m * 1.5)
+        node = maneuver.adjust_other_apsis_now(client, vessel, min_safe_periapsis_m * 1.5)
         maneuver.execute_node(client, vessel, job, node)
 
     # A phase-angle Hohmann-style transfer aims for a capture, but doesn't
