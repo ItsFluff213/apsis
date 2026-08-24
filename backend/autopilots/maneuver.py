@@ -5,6 +5,44 @@ booster-return autopilots so the node-execution logic lives in one place.
 
 import math
 
+from backend import parts
+
+
+def _stage_if_dry(vessel, job, decouplers_by_stage, fired_stages):
+    """Confirmed live: a burn needing more delta-v than the current stage
+    can supply just runs the stage dry mid-burn -- available_thrust hits 0,
+    remaining_delta_v gets stuck at a fixed value forever, and nothing
+    stages to continue. execute_node's burn loop had no staging logic at
+    all (unlike ascent.py, which already handles this during launch), so
+    any burn -- circularization, transfer, capture, plane change -- could
+    silently stall with the engine dry and throttle pinned at 1.0. Mirrors
+    the same tagged-decoupler-first, activate_next_stage-fallback pattern
+    already proven during ascent."""
+    control = vessel.control
+    stage_num = control.current_stage
+    if vessel.available_thrust >= 0.1 or stage_num in fired_stages:
+        return False
+    # Inside an active burn (unlike ascent's pre-launch case) thrust
+    # reading 0 always means the current stage is genuinely dry -- the
+    # engine was already firing, so there's no "hasn't ignited yet" case
+    # to special-case around here.
+    was_throttle = control.throttle
+    control.throttle = 0.0
+    tagged = decouplers_by_stage.get(stage_num)
+    if tagged:
+        for d in tagged:
+            try:
+                if d.decoupler and not d.decoupler.decoupled:
+                    d.decoupler.decouple()
+            except Exception:
+                pass
+    control.activate_next_stage()
+    fired_stages.add(stage_num)
+    job.message = f"staged mid-burn (stage {stage_num})"
+    job.sleep(0.3)  # let the new stage's engine actually spool up/ignite
+    control.throttle = was_throttle
+    return True
+
 
 def vis_viva_speed(mu, r, a):
     return math.sqrt(mu * (2.0 / r - 1.0 / a))
@@ -286,9 +324,18 @@ def execute_node(client, vessel, job, node, lead_time=15):
     taper_window = 5.0  # start easing off within this many m/s of done
     min_throttle = 0.02
     last_dv = node.remaining_delta_v
+    decouplers_by_stage = parts.get_decouplers_by_stage(vessel)
+    fired_stages = set()
     try:
         while node.remaining_delta_v > 0.02 and node.remaining_delta_v <= last_dv + 0.1:
             job.check_abort()
+            # Confirmed live: a burn needing more delta-v than the current
+            # stage can supply just runs it dry -- available_thrust hits 0
+            # and remaining_delta_v gets stuck at a fixed value forever
+            # (which the while-condition above can't tell apart from a
+            # completed burn). Stage and keep burning instead of stalling.
+            if _stage_if_dry(vessel, job, decouplers_by_stage, fired_stages):
+                continue
             last_dv = node.remaining_delta_v
             control.throttle = min(1.0, max(min_throttle, last_dv / taper_window))
             job.sleep(0.02)
