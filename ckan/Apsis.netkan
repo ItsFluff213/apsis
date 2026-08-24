@@ -6,11 +6,11 @@
     "license": "MIT",
     "release_status": "development",
     "author": "ItsFluff213",
-    "$kref": "#/ckan/github/ItsFluff213/apsis-ksp-mod",
+    "$kref": "#/ckan/github/ItsFluff213/apsis",
     "resources": {
-        "repository": "https://github.com/ItsFluff213/apsis-ksp-mod",
-        "homepage": "https://github.com/ItsFluff213/apsis-ksp-mod",
-        "bugtracker": "https://github.com/ItsFluff213/apsis-ksp-mod/issues"
+        "repository": "https://github.com/ItsFluff213/apsis",
+        "homepage": "https://github.com/ItsFluff213/apsis",
+        "bugtracker": "https://github.com/ItsFluff213/apsis/issues"
     },
     "depends": [
         { "name": "ModuleManager" }
