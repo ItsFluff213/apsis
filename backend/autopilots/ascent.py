@@ -71,6 +71,19 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     control.rcs = False
     control.throttle = 1.0
 
+    # The autopilot auto-tunes its own PID gains from vessel mass/torque,
+    # and confirmed live: it can still end up oscillating even with that
+    # on -- heading swinging a steady +/-2 degrees back and forth roughly
+    # every 2 seconds, angular velocity cycling with it. Confirmed via the
+    # autopilot's own built-in diagnostics mid-flight: pitch_yaw_control_
+    # oscillation was nonzero and pitch_yaw_oscillation_latched was True,
+    # i.e. it had detected and locked into an oscillating state itself.
+    # target_smoothing_time defaults to 0 (no smoothing of target changes
+    # at all) -- giving it some smooths out the response to each gravity-
+    # turn target update instead of snapping straight at it and
+    # overshooting.
+    ap.target_smoothing_time = 0.5
+
     ap.engaged = True
     ap.target_pitch_and_heading(90, 90)
     job.message = "launching"
