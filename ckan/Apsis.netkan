@@ -1,0 +1,27 @@
+{
+    "spec_version": "v1.4",
+    "identifier": "Apsis",
+    "name": "Apsis",
+    "abstract": "Autonomous fleet control for KSP: kRPC-driven autopilots for ascent, landing, booster return, and satellite constellation deployment, controlled via a local web dashboard.",
+    "license": "MIT",
+    "release_status": "development",
+    "author": "ItsFluff213",
+    "$kref": "#/ckan/github/ItsFluff213/apsis-ksp-mod",
+    "resources": {
+        "repository": "https://github.com/ItsFluff213/apsis-ksp-mod",
+        "homepage": "https://github.com/ItsFluff213/apsis-ksp-mod",
+        "bugtracker": "https://github.com/ItsFluff213/apsis-ksp-mod/issues"
+    },
+    "depends": [
+        { "name": "ModuleManager" }
+    ],
+    "recommends": [
+        { "name": "kRPC" }
+    ],
+    "install": [
+        {
+            "find": "Apsis",
+            "install_to": "GameData"
+        }
+    ]
+}
