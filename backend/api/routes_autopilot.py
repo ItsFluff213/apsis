@@ -1,3 +1,5 @@
+import math
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -102,6 +104,36 @@ def build_router(client, registry, jobs):
 
         job = jobs.start(vessel_id, "moon-transfer", run, body.model_dump())
         return job.to_dict()
+
+    @router.get("/{vessel_id}/moon-transfer/preview")
+    def preview_moon_transfer(vessel_id: str, moon_name: str):
+        """Read-only: computes the same closed-form direct-intercept plan
+        run_moon_transfer would burn, without touching the game -- lets the
+        dashboard draw the planned trajectory before committing to it."""
+        vessel = get_vessel_or_404(vessel_id)
+        try:
+            parent = vessel.orbit.body
+            moon = next((b for b in parent.satellites if b.name == moon_name), None)
+            if moon is None:
+                raise HTTPException(status_code=400, detail=f"{moon_name!r} is not a satellite of {parent.name}")
+            plan = moon_transfer.compute_direct_transfer_plan(client, vessel, parent, moon)
+        except NotConnected as exc:
+            raise HTTPException(status_code=503, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        sc = client.space_center
+        periapsis_angle_deg = math.degrees(math.atan2(plan["periapsis_hat"][2], plan["periapsis_hat"][0]))
+        return {
+            "moon_name": moon.name,
+            "periapsis_angle_deg": periapsis_angle_deg,
+            "r_peri_m": plan["r_peri"],
+            "r_apo_m": plan["target_apoapsis_m"] + parent.equatorial_radius,
+            "inclination_deg": math.degrees(vessel.orbit.inclination),
+            "moon_orbital_radius_m": moon.orbit.semi_major_axis,
+            "burn_in_s": plan["burn_ut"] - sc.ut,
+            "arrival_in_s": plan["arrival_ut"] - sc.ut,
+        }
 
     @router.post("/interplanetary/parse")
     def parse_interplanetary_plan(body: InterplanetaryRequest):

@@ -106,6 +106,15 @@ const ALL_BODY_NAMES = (function flatten(node, out) {
   return out;
 })(SYSTEM_TREE, []);
 
+function findSystemNode(name, node = SYSTEM_TREE) {
+  if (node.name === name) return node;
+  for (const child of node.children || []) {
+    const found = findSystemNode(name, child);
+    if (found) return found;
+  }
+  return null;
+}
+
 // Moons only (a topLevel planet's own children), for the moon-transfer
 // dropdown -- distinct from ALL_BODY_NAMES, which also includes the
 // Sun-orbiting planets themselves.
@@ -242,6 +251,7 @@ function buildCard(vessel) {
       <select class="moon-transfer-target"></select>
       <input class="moon-transfer-periapsis" type="number" placeholder="periapsis km" value="50" />
       <input class="moon-transfer-incl" type="number" placeholder="incl deg (optional)" />
+      <button class="moon-transfer-preview">Preview on map</button>
       <button class="moon-transfer-start">Transfer to moon</button>
     </div>
     <div class="job-status"></div>
@@ -286,6 +296,7 @@ function buildCard(vessel) {
     moonTransferTarget: root.querySelector(".moon-transfer-target"),
     moonTransferPeriapsis: root.querySelector(".moon-transfer-periapsis"),
     moonTransferIncl: root.querySelector(".moon-transfer-incl"),
+    moonTransferPreview: root.querySelector(".moon-transfer-preview"),
     moonTransferStart: root.querySelector(".moon-transfer-start"),
     jobStatus: root.querySelector(".job-status"),
   };
@@ -375,6 +386,58 @@ function buildCard(vessel) {
         target_inclination_deg: inclRaw === "" ? null : Number(inclRaw),
       }),
     });
+  });
+
+  els.moonTransferPreview.addEventListener("click", async () => {
+    const moonName = els.moonTransferTarget.value;
+    els.moonTransferPreview.disabled = true;
+    els.moonTransferPreview.textContent = "Calculating...";
+    try {
+      const res = await fetch(`/api/autopilot/${vessel.id}/moon-transfer/preview?moon_name=${encodeURIComponent(moonName)}`);
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `HTTP ${res.status}`);
+      }
+      const plan = await res.json();
+      const moonNode = findSystemNode(moonName);
+      if (!moonNode || !window.Map3D) return;
+
+      // Scale real meters down to this moon's own schematic display radius
+      // -- the same fixed-radius-around-Kerbin compression the map already
+      // uses for moons, applied consistently to the transfer ellipse too
+      // so it visually lines up with where the moon is actually drawn.
+      const scale = moonNode.radius / plan.moon_orbital_radius_m;
+      const a = (plan.r_peri_m + plan.r_apo_m) / 2 * scale;
+      const e = (plan.r_apo_m - plan.r_peri_m) / (plan.r_apo_m + plan.r_peri_m);
+      const periapsisRad = (plan.periapsis_angle_deg * Math.PI) / 180;
+      const inclRad = (plan.inclination_deg * Math.PI) / 180;
+
+      const points = [];
+      const segments = 96;
+      for (let i = 0; i <= segments; i++) {
+        const trueAnomaly = (i / segments) * Math.PI * 2;
+        const r = (a * (1 - e * e)) / (1 + e * Math.cos(trueAnomaly));
+        const absAngle = periapsisRad + trueAnomaly;
+        const flatX = r * Math.cos(absAngle);
+        const flatZ = r * Math.sin(absAngle);
+        points.push({ x: flatX, y: flatZ * Math.sin(inclRad), z: flatZ * Math.cos(inclRad) });
+      }
+      // Arrival point is exactly the apoapsis (trueAnomaly = pi from periapsis).
+      const arrivalAbsAngle = periapsisRad + Math.PI;
+      const arrivalMarker = {
+        x: (plan.r_apo_m * scale) * Math.cos(arrivalAbsAngle),
+        y: 0,
+        z: (plan.r_apo_m * scale) * Math.sin(arrivalAbsAngle),
+      };
+
+      window.Map3D.showTransferPreview("Kerbin", points, arrivalMarker);
+      els.moonTransferPreview.textContent = `Preview: burn in ${fmt(plan.burn_in_s)}s, arrive in ${fmt(plan.arrival_in_s)}s`;
+    } catch (e) {
+      els.moonTransferPreview.textContent = `Preview failed: ${e.message}`;
+    } finally {
+      els.moonTransferPreview.disabled = false;
+      setTimeout(() => { els.moonTransferPreview.textContent = "Preview on map"; }, 4000);
+    }
   });
 
   els.partsToggle.addEventListener("click", () => {

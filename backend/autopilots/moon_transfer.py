@@ -57,9 +57,11 @@ def _rotate_about_axis(vec, axis, angle):
     return tuple(vec[i] * cos_a + cross_term[i] * sin_a + axis[i] * dot_term for i in range(3))
 
 
-def _plan_direct_transfer(client, vessel, job, parent, moon):
-    """Computes the single burn (at the vessel's next periapsis) that sends
-    it directly toward the moon, in closed form -- no search/wait loop.
+def compute_direct_transfer_plan(client, vessel, parent, moon):
+    """Pure calculation, no burn -- the closed-form direct-intercept math,
+    factored out so it can be used both to actually build the maneuver node
+    (see _plan_direct_transfer below) and to preview the planned trajectory
+    (e.g. for a dashboard visualization) without touching the game state.
 
     Key fact this relies on: a purely prograde burn at periapsis never
     rotates the orbit's apsis line, so no matter which periapsis passage we
@@ -73,6 +75,11 @@ def _plan_direct_transfer(client, vessel, job, parent, moon):
     Kerbin orbit hoping a coarse angular match happens to be close enough --
     which was the old approach, and why it could end up "aimed somewhere at
     the moon's orbit" instead of at the moon itself.
+
+    Returns a dict: burn_ut, arrival_ut, target_apoapsis_m, r_peri,
+    periapsis_hat, normal (both as (x,y,z) tuples in parent's
+    non_rotating_reference_frame) -- everything needed to both build the
+    node and to draw the planned ellipse.
     """
     sc = client.space_center
     frame = parent.non_rotating_reference_frame
@@ -115,14 +122,28 @@ def _plan_direct_transfer(client, vessel, job, parent, moon):
             continue  # degenerate for this k -- not a valid outward transfer
         score = abs(transfer_time - nominal_transfer_time)
         if best is None or score < best[0]:
-            best = (score, r_apo)
+            best = (score, r_apo, arrival_ut)
 
     if best is None:
         raise ValueError(f"could not find a valid direct transfer window to {moon.name}")
 
-    target_apoapsis_m = best[1] - parent.equatorial_radius
+    _, r_apo, arrival_ut = best
+    return {
+        "burn_ut": burn_ut,
+        "arrival_ut": arrival_ut,
+        "target_apoapsis_m": r_apo - parent.equatorial_radius,
+        "r_peri": r_peri,
+        "periapsis_hat": periapsis_hat,
+        "normal": normal,
+    }
+
+
+def _plan_direct_transfer(client, vessel, job, parent, moon):
+    """Builds and returns the actual maneuver node for the direct transfer
+    computed by compute_direct_transfer_plan (see there for the math)."""
+    plan = compute_direct_transfer_plan(client, vessel, parent, moon)
     job.message = f"burning for direct {moon.name} intercept"
-    return maneuver.change_apoapsis_node(client, vessel, target_apoapsis_m, burn_at="periapsis")
+    return maneuver.change_apoapsis_node(client, vessel, plan["target_apoapsis_m"], burn_at="periapsis")
 
 
 def run_moon_transfer(client, vessel, job, moon_name, target_periapsis_m, target_inclination_deg=None):

@@ -55,6 +55,23 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
             # tagged decoupler for the current stage number if one exists.
             if vessel.available_thrust < 0.1 and control.current_stage not in fired_stages:
                 stage_num = control.current_stage
+
+                # Cut throttle for the actual separation instant, and hold
+                # whatever attitude the vessel is at right now rather than
+                # letting the autopilot keep chasing the ascent's live
+                # turn-angle target through it. Reported live: staging was
+                # making the rocket "very unstable". Full throttle through
+                # the exact moment of decoupling maximizes any plume
+                # impingement / collision torque against the departing
+                # stage, and a sudden CoM/moment-of-inertia shift right as
+                # the autopilot is also mid-correction toward a still-
+                # moving target is a textbook way to kick off a PID
+                # overshoot/oscillation. Real multi-stage rockets briefly
+                # cut thrust across separation for the same reason.
+                control.throttle = 0.0
+                hold_pitch, hold_heading = flight.pitch, flight.heading
+                ap.target_pitch_and_heading(hold_pitch, hold_heading)
+
                 tagged = decouplers_by_stage.get(stage_num)
                 if tagged:
                     for d in tagged:
@@ -72,6 +89,14 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
                 control.activate_next_stage()
                 fired_stages.add(stage_num)
                 job.message = f"staged (stage {stage_num})"
+
+                # Give the new stage a moment to physically settle (engine
+                # spooling up, any wobble from the split-second above
+                # damping out) before committing back to full thrust and
+                # the live steering target.
+                job.sleep(0.4)
+                control.throttle = 1.0
+                ap.target_pitch_and_heading(90 - turn_angle, 90 - target_inclination_deg)
 
                 # If a piece actually separated (a new vessel genuinely
                 # appeared) and it still has engines/fuel of its own (e.g.

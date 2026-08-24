@@ -101,6 +101,7 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
 .sync-bar input,
 .edit-orbit-form input,
 .ascent-form input, .ascent-form select,
+.group-moon-transfer input, .group-moon-transfer select,
 .parts-panel select, .parts-panel input {
   background: var(--bg-well);
   border: 1px solid var(--border);
@@ -117,6 +118,7 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
 .group-constellation button,
 .group-interplanetary button,
 .interplanetary-actions button,
+.group-moon-transfer button,
 .parts-panel button {
   background: var(--accent);
   border: none;
@@ -129,6 +131,7 @@ h1 { font-size: 20px; margin: 0 0 var(--sp-1); }
 }
 .ascent-form button.abort { background: var(--bad); }
 .new-constellation-form button#nc-cancel,
+.moon-transfer-preview,
 .parts-toggle {
   background: transparent;
   color: var(--dim);
