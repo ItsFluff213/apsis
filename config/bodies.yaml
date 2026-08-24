@@ -1,0 +1,71 @@
+# Per-celestial-body parking orbit parameters.
+# atmosphere_height_m: 0 if the body has no atmosphere.
+# min_safe_periapsis_m: lowest periapsis altitude considered safe from decay/impact
+#   (for atmospheric bodies this is above the atmosphere; for airless bodies it's
+#   above the tallest known terrain plus a margin).
+# default_parking_altitude_m: altitude the satellite/station-keeping autopilot
+#   targets by default when none is specified.
+Kerbin:
+  atmosphere_height_m: 70000
+  min_safe_periapsis_m: 75000
+  default_parking_altitude_m: 100000
+Mun:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 10000
+  default_parking_altitude_m: 30000
+Minmus:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 6000
+  default_parking_altitude_m: 20000
+Duna:
+  atmosphere_height_m: 50000
+  min_safe_periapsis_m: 55000
+  default_parking_altitude_m: 80000
+Ike:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 15000
+  default_parking_altitude_m: 40000
+Eve:
+  atmosphere_height_m: 90000
+  min_safe_periapsis_m: 100000
+  default_parking_altitude_m: 150000
+Gilly:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 8000
+  default_parking_altitude_m: 20000
+Moho:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 10000
+  default_parking_altitude_m: 30000
+Dres:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 15000
+  default_parking_altitude_m: 40000
+Jool:
+  atmosphere_height_m: 200000
+  min_safe_periapsis_m: 220000
+  default_parking_altitude_m: 300000
+Laythe:
+  atmosphere_height_m: 55000
+  min_safe_periapsis_m: 60000
+  default_parking_altitude_m: 90000
+Vall:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 15000
+  default_parking_altitude_m: 40000
+Tylo:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 20000
+  default_parking_altitude_m: 60000
+Bop:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 10000
+  default_parking_altitude_m: 30000
+Pol:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 8000
+  default_parking_altitude_m: 25000
+Eeloo:
+  atmosphere_height_m: 0
+  min_safe_periapsis_m: 10000
+  default_parking_altitude_m: 30000

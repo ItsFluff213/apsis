@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>KSP Autonomous Fleet Control</title>
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
+    }
+  }
+  </script>
+</head>
+<body data-tab="overview">
+  <h1>KSP Autonomous Fleet Control <span id="conn-status" class="bad">connecting...</span></h1>
+  <p class="subtitle">Live vessel registry, telemetry, and autopilot control over kRPC.</p>
+
+  <div class="profile-bar">
+    <label for="profile-select">Save profile:</label>
+    <select id="profile-select"></select>
+    <input id="profile-new" type="text" placeholder="new profile name" />
+    <button id="profile-switch-btn">Switch / Create</button>
+    <span class="profile-hint">kRPC can't tell which save is loaded -- pick a name per save so constellations/roles don't mix between them.</span>
+  </div>
+
+  <div id="tabs" class="tabs">
+    <button class="tab-btn active" data-tab="overview">Overview</button>
+    <button class="tab-btn" data-tab="satellites">Satellites</button>
+    <button class="tab-btn" data-tab="launch">Launch / Booster Landing</button>
+    <button class="tab-btn" data-tab="landing">Landing</button>
+    <button class="tab-btn" data-tab="interplanetary">Interplanetary</button>
+    <button class="tab-btn" data-tab="docking">Docking / Refuel / Cargo</button>
+  </div>
+
+  <div class="map-overview">
+    <div class="map-header">
+      <h2>System Overview</h2>
+      <button id="map-reset" class="tab-btn">Reset view</button>
+    </div>
+    <div class="map-canvas-wrap">
+      <div id="map3d-container"></div>
+      <div id="map-tooltip" class="map-tooltip" style="display:none;"></div>
+    </div>
+    <p class="map-hint">Drag to orbit &middot; scroll to zoom &middot; right-drag to pan &middot; hover a craft for details</p>
+    <div id="map-legend" class="map-legend"></div>
+  </div>
+
+  <div id="constellations-panel" class="constellations-panel">
+    <div class="constellations-header">
+      <h2>Constellations</h2>
+      <button id="new-constellation-btn" class="tab-btn">+ New constellation</button>
+    </div>
+    <form id="new-constellation-form" class="new-constellation-form" style="display:none;">
+      <input id="nc-name" type="text" placeholder="name" required />
+      <select id="nc-body"></select>
+      <select id="nc-kind">
+        <option value="communications">Communications (geostationary)</option>
+        <option value="custom">Custom</option>
+      </select>
+      <input id="nc-altitude" type="number" placeholder="altitude km" style="display:none;" />
+      <input id="nc-inclination" type="number" placeholder="inclination deg" value="0" style="display:none;" />
+      <button type="submit">Create</button>
+      <button type="button" id="nc-cancel">Cancel</button>
+    </form>
+    <div id="constellations-list" class="constellations-list"></div>
+    <div class="sync-bar">
+      <label for="sync-source-url">Sync from teammate:</label>
+      <input id="sync-source-url" type="text" placeholder="http://192.168.1.23:8000" />
+      <button id="sync-pull-btn">Pull</button>
+      <span id="sync-status"></span>
+    </div>
+  </div>
+
+  <div id="interplanetary-panel" class="interplanetary-panel">
+    <div class="interplanetary-header">
+      <h2>Interplanetary Transfer</h2>
+    </div>
+    <p class="interplanetary-hint">
+      Compute a trajectory at <a href="https://nmisyats.github.io/KSP-MGA-Planner/" target="_blank" rel="noopener">KSP-MGA-Planner</a>,
+      paste its full text output below, then Parse and Start Transfer on the craft that should fly it.
+      Craft already assigned to a satellite constellation are hidden below -- this is for free-flying probes.
+    </p>
+    <textarea id="ip-plan-text" placeholder="Paste the full KSP-MGA-Planner output here..."></textarea>
+    <div class="interplanetary-actions">
+      <button id="ip-parse-btn">Parse Plan</button>
+      <span id="ip-parse-status"></span>
+    </div>
+    <div id="ip-preview" class="interplanetary-preview" style="display:none;"></div>
+  </div>
+
+  <div id="placeholder" class="placeholder-note" style="display:none;"></div>
+  <div id="vessels"></div>
+  <script type="module" src="map3d.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

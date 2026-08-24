@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+data/autopilot.db
+.venv/
+venv/
+
+# PyInstaller build output -- rebuilt from source, not checked in; the
+# distributable exe gets attached to GitHub Releases instead.
+build/
+dist/
+
+# Internal debugging snapshots from development -- not part of the mod.
+backups/
+
+# Claude Code session/tooling config -- not part of the mod itself.
+.claude/
+
+# Redundant loose copy of the compiled plugin -- the real one to ship
+# lives at ksp-plugin/Apsis/GameData/Apsis/Plugins/Apsis.dll.
+ksp-plugin/Apsis/Apsis.dll

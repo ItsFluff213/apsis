@@ -1,0 +1,669 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e1420;
+  --panel: #161d2b;
+  --border: #263149;
+  --text: #dbe4f5;
+  --dim: #7d8aa8;
+  --accent: #4da3ff;
+  --good: #4dd28c;
+  --warn: #ffb84d;
+  --bad: #ff6b6b;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  padding: 24px;
+}
+
+h1 { font-size: 20px; margin: 0 0 4px; }
+.subtitle { color: var(--dim); margin: 0 0 20px; font-size: 13px; }
+
+#conn-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  margin-left: 8px;
+}
+#conn-status.ok { background: rgba(77,210,140,0.15); color: var(--good); }
+#conn-status.bad { background: rgba(255,107,107,0.15); color: var(--bad); }
+
+.profile-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--dim);
+}
+.profile-bar select, .profile-bar input {
+  background: #161d2b;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.profile-bar input { width: 160px; }
+.profile-bar button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.profile-hint { flex-basis: 100%; font-size: 11px; }
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+.tab-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  border-radius: 8px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06111f;
+  font-weight: 600;
+}
+
+.placeholder-note {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--dim);
+  font-size: 13px;
+}
+
+/* Tab visibility rules: default (overview) shows everything.
+   Each tab now shows only the one control it actually needs, per craft:
+     Satellites -- only Deploy (constellation assignment already implies
+       the target orbit; no manual launch/land/return controls belong here).
+     Landing -- only a waypoint select + Land, and only for landers.
+     Launch/Booster Landing -- Launch controls for a craft still on the
+       surface, OR Return-to-KSC for a booster currently away from the pad
+       (never both on the same craft, decided live via data-grounded/
+       data-role-booster set in updateCard()). */
+body[data-tab="satellites"] .category-section:not(.category-satellite) { display: none !important; }
+body[data-tab="satellites"] .group-ascent,
+body[data-tab="satellites"] .group-landing,
+body[data-tab="satellites"] .group-return,
+body[data-tab="satellites"] .group-parts { display: none; }
+
+body[data-tab="landing"] .category-section:not(.category-lander) { display: none !important; }
+body[data-tab="landing"] .group-ascent,
+body[data-tab="landing"] .group-return,
+body[data-tab="landing"] .group-parts,
+body[data-tab="landing"] .group-constellation { display: none; }
+
+body[data-tab="launch"] .group-landing,
+body[data-tab="launch"] .group-parts,
+body[data-tab="launch"] .group-constellation { display: none; }
+body[data-tab="launch"] .ascent-form,
+body[data-tab="launch"] .group-return { display: none; }
+body[data-tab="launch"] .vessel-card[data-grounded="true"] .ascent-form { display: flex; }
+body[data-tab="launch"] .vessel-card[data-role-booster="true"][data-grounded="false"] .group-return { display: flex; }
+/* Only show a craft here at all if it's actually launchable or a booster
+   away from the pad -- anything else (deployed satellites, landed landers,
+   stations, etc.) doesn't belong on this tab. */
+body[data-tab="launch"] .vessel-card { display: none; }
+body[data-tab="launch"] .vessel-card[data-grounded="true"],
+body[data-tab="launch"] .vessel-card[data-role-booster="true"][data-grounded="false"] { display: block; }
+
+body[data-tab="docking"] .map-overview,
+body[data-tab="docking"] #vessels { display: none; }
+
+/* Interplanetary tab: hide anything already assigned to a satellite
+   constellation (that's the Satellites tab's job) -- this tab is for
+   free-flying probes/craft carrying out a manually-planned transfer. */
+body[data-tab="interplanetary"] .vessel-card[data-in-constellation="true"] { display: none; }
+body[data-tab="interplanetary"] .group-ascent,
+body[data-tab="interplanetary"] .group-landing,
+body[data-tab="interplanetary"] .group-return,
+body[data-tab="interplanetary"] .group-constellation,
+body[data-tab="interplanetary"] .group-parts { display: none; }
+.group-interplanetary, .group-moon-transfer { display: none; }
+body[data-tab="interplanetary"] .group-interplanetary,
+body[data-tab="interplanetary"] .group-moon-transfer { display: flex; }
+
+.constellations-panel { display: none; }
+body[data-tab="satellites"] .constellations-panel { display: block; }
+
+/* Overview tab: one compact row per role, top to bottom, pure information
+   plus the one control that's always safe to keep reachable here -- the
+   role selector -- since changing a craft's role on a category-filtered
+   tab (e.g. Satellites) makes its whole card, select included, vanish from
+   that view the instant the role no longer matches the filter. Overview
+   shows every craft regardless of role, so it's always available here.
+   Full telemetry/tagged-roles only appear on hover, as an overlay so
+   hovering doesn't reflow neighboring cards. */
+body[data-tab="overview"] .category-grid {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 10px 10px;
+  padding-bottom: 6px;
+}
+body[data-tab="overview"] .vessel-card {
+  flex: 0 0 240px;
+  padding: 10px 12px;
+  position: relative;
+  overflow: visible;
+}
+body[data-tab="overview"] .vessel-name {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+}
+body[data-tab="overview"] .vessel-header {
+  flex-wrap: nowrap;
+}
+body[data-tab="overview"] .vessel-type {
+  flex-shrink: 0;
+}
+body[data-tab="overview"] .group-parts,
+body[data-tab="overview"] .ascent-form,
+body[data-tab="overview"] .group-constellation,
+body[data-tab="overview"] .job-status {
+  display: none !important;
+}
+body[data-tab="overview"] .vessel-detail {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  width: 240px;
+  margin-top: 4px;
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+body[data-tab="overview"] .vessel-card:hover {
+  border-color: var(--accent);
+}
+body[data-tab="overview"] .vessel-card:hover .vessel-detail {
+  display: block;
+}
+
+.constellations-panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 24px;
+}
+.constellations-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.constellations-header h2 { font-size: 15px; margin: 0; }
+
+.new-constellation-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 10px;
+  background: #0e1420;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.new-constellation-form input, .new-constellation-form select {
+  background: #161d2b;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.new-constellation-form button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.new-constellation-form button#nc-cancel {
+  background: transparent;
+  color: var(--dim);
+  border: 1px solid var(--border);
+}
+
+.interplanetary-panel {
+  display: none;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 24px;
+}
+body[data-tab="interplanetary"] .interplanetary-panel { display: block; }
+.interplanetary-header h2 { font-size: 15px; margin: 0 0 8px; }
+.interplanetary-hint {
+  font-size: 12px;
+  color: var(--dim);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+.interplanetary-hint a { color: var(--accent); }
+#ip-plan-text {
+  width: 100%;
+  height: 140px;
+  background: #0e1420;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+  resize: vertical;
+}
+.interplanetary-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.interplanetary-actions button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#ip-parse-status { font-size: 12px; }
+#ip-parse-status.ok { color: var(--good); }
+#ip-parse-status.bad { color: var(--bad); }
+.interplanetary-preview {
+  margin-top: 12px;
+  font-size: 12px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.interplanetary-preview .ip-sequence { color: var(--accent); font-weight: 600; margin-bottom: 6px; }
+.interplanetary-preview table { width: 100%; border-collapse: collapse; }
+.interplanetary-preview th, .interplanetary-preview td {
+  text-align: left;
+  padding: 3px 8px 3px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--dim);
+}
+.interplanetary-preview td:first-child { color: var(--text); }
+
+.group-interplanetary button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  margin-top: 8px;
+}
+.group-interplanetary button:disabled {
+  background: var(--border);
+  color: var(--dim);
+  cursor: not-allowed;
+}
+
+.constellations-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.sync-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--dim);
+}
+.sync-bar input {
+  width: 220px;
+  background: #161d2b;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.sync-bar button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+#sync-status.ok { color: var(--good); }
+#sync-status.bad { color: var(--bad); }
+.constellation-box {
+  background: #0e1420;
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  min-height: 80px;
+  transition: border-color 0.15s, background 0.15s;
+}
+.constellation-box.drag-over {
+  border-color: var(--accent);
+  background: rgba(77,163,255,0.08);
+}
+.constellation-box h4 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.constellation-box .meta {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.constellation-box .member {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  background: #161d2b;
+  border-radius: 5px;
+  padding: 3px 6px;
+  margin-bottom: 4px;
+}
+.constellation-box .member button {
+  background: transparent;
+  border: none;
+  color: var(--bad);
+  cursor: pointer;
+  font-size: 11px;
+}
+.constellation-box .delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 11px;
+  float: right;
+}
+.constellation-box .edit-orbit-btn {
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 12px;
+  float: right;
+  margin-right: 6px;
+}
+.constellation-box .edit-orbit-btn:hover,
+.constellation-box .delete-btn:hover {
+  color: var(--text);
+}
+.edit-orbit-form {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+}
+.edit-orbit-form input {
+  width: 76px;
+  background: #161d2b;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 11px;
+}
+.edit-orbit-form button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.vessel-card[draggable="true"] { cursor: grab; }
+.vessel-card.dragging { opacity: 0.5; }
+
+.group-constellation {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.group-constellation button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.map-overview {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 24px;
+}
+.map-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.map-header h2 { font-size: 15px; margin: 0; }
+.map-canvas-wrap { position: relative; }
+#map3d-container {
+  width: 100%;
+  height: 350px;
+  background: #060a12;
+  border-radius: 6px;
+  overflow: hidden;
+}
+#map3d-container canvas { display: block; touch-action: none; }
+.map-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: #0e1420;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: nowrap;
+  z-index: 10;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.map-tooltip .val { color: var(--accent); }
+.map-hint { font-size: 11px; color: var(--dim); margin: 6px 0 0; }
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.category-section { margin-bottom: 24px; }
+.category-header {
+  font-size: 13px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.category-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.vessel-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+
+.vessel-card.active { border-color: var(--accent); }
+
+.vessel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+
+.vessel-name {
+  font-weight: 600;
+  font-size: 15px;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  width: 65%;
+}
+.vessel-name:focus { outline: 1px solid var(--accent); }
+
+.type-icon { display: inline-flex; align-items: center; }
+.type-icon svg { display: block; }
+
+.vessel-type {
+  font-size: 11px;
+  color: var(--text);
+  background: #1f2740;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.map-legend div { display: flex; align-items: center; gap: 4px; }
+
+.telemetry {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+  font-size: 12px;
+  color: var(--dim);
+  margin: 8px 0;
+}
+.telemetry span.val { color: var(--text); }
+
+.roles {
+  font-size: 11px;
+  color: var(--dim);
+  margin-bottom: 8px;
+}
+.roles code { color: var(--accent); }
+
+.parts-toggle {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+.parts-panel select, .parts-panel input, .parts-panel button {
+  background: #0e1420;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 4px;
+  font-size: 11px;
+}
+.parts-panel button { cursor: pointer; }
+
+.ascent-form {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.ascent-form input, .ascent-form select {
+  width: 72px;
+  background: #0e1420;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.ascent-form select.landing-waypoint {
+  width: 140px;
+}
+.ascent-form button {
+  background: var(--accent);
+  border: none;
+  color: #06111f;
+  font-weight: 600;
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.ascent-form button.abort {
+  background: var(--bad);
+}
+
+.job-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--warn);
+}
+.job-status.done { color: var(--good); }
+.job-status.error, .job-status.aborted { color: var(--bad); }
