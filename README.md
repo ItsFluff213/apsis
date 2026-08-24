@@ -1,39 +1,43 @@
-# KSP Autonomous Fleet Control
+# Apsis
 
 A local web dashboard that flies Kerbal Space Program craft autonomously via
 [kRPC](https://krpc.github.io/krpc/). Built so far: a vessel registry, live
 telemetry, part-role tagging (read-only from the dashboard; assigned
 in-game), an ascent-to-orbit autopilot, orbital maneuver helpers, a general
-waypoint-landing autopilot, and a booster return-to-KSC autopilot. Not yet
-built: auto-docking and satellite constellation management (see
-`config/bodies.yaml` for the per-body parking orbit data already in place
-for that).
+waypoint-landing autopilot, a booster return-to-KSC autopilot, satellite
+constellation deployment, interplanetary transfer (via
+[KSP-MGA-Planner](https://nmisyats.github.io/KSP-MGA-Planner/) integration),
+and a native Mun/Minmus transfer autopilot.
+
+**This project was built with AI assistance (Claude) throughout, and is
+still an actively-evolving hobby project, not a polished/audited release.**
+See [AI_USAGE.md](AI_USAGE.md) for details on how it was built and tested.
 
 ## Setup
 
-1. Install the [kRPC mod](https://forum.kerbalspaceprogram.com/topic/69313-*)
-   into KSP's `GameData` folder. This project targets kRPC **0.6.0** --
-   match the `krpc` PyPI package version in `requirements.txt` to whatever
-   kRPC mod version you actually have installed (check in-game: Mods menu >
-   kRPC), since the RPC API has changed between versions before.
-2. Install Python 3.10+ and the dependencies:
+**No Python needed** -- grab `Apsis.exe` and the `GameData-Apsis.zip` plugin
+from the [latest release](https://github.com/ItsFluff213/apsis/releases):
 
-   ```bash
-   pip install -r requirements.txt
-   ```
-
+1. Install [ModuleManager](https://forum.kerbalspaceprogram.com/topic/50533-*)
+   and the [kRPC mod](https://forum.kerbalspaceprogram.com/topic/69313-*)
+   into KSP's `GameData` folder. This project targets kRPC **0.6.0**.
+2. Unzip `GameData-Apsis.zip` so `GameData/Apsis/` ends up inside your KSP
+   `GameData` folder.
 3. Launch KSP, load a save, and start the kRPC server: **Mods menu (top of
    screen in-game) > kRPC > Start server** (defaults: address `127.0.0.1`,
    RPC port `50000`, stream port `50001` — matches this project's defaults).
-4. Run the dashboard server:
-
-   ```bash
-   python -m backend.main
-   ```
-
+4. Run `Apsis.exe` -- it opens the dashboard in your browser automatically.
    It will wait and retry until it can reach the kRPC server, so it's fine
-   to start this before or after step 3.
-5. Open `http://localhost:8000` in a browser.
+   to start this before or after step 3. Keep its console window open while
+   you use the dashboard; closing it stops Apsis.
+
+### Running from source instead
+
+If you'd rather run it from source (e.g. to make changes yourself):
+
+1. Do steps 1–3 above.
+2. Install Python 3.10+ and the dependencies: `pip install -r requirements.txt`
+3. Run `python -m backend.main`, then open `http://localhost:8000`.
 
 ## Tagging parts for roles
 
