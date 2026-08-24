@@ -15,10 +15,13 @@ switching saves doesn't mix one save's constellations/roles into another's.
 Rows created before this existed default to the "default" profile.
 """
 
+import logging
 import sqlite3
 from contextlib import contextmanager
 
 from backend.paths import APP_DIR
+
+logger = logging.getLogger("db")
 
 DB_PATH = APP_DIR / "data" / "autopilot.db"
 
@@ -69,71 +72,130 @@ CREATE TABLE IF NOT EXISTS core_role_defaults (
 );
 """
 
-# Columns added after the tables above already existed in someone's real
-# data/autopilot.db -- ADD COLUMN is safe/idempotent to re-run (errors from
-# an already-present column are swallowed below), so this covers both a
-# brand new database (which gets the column from SCHEMA directly) and an
-# existing one from before save profiles existed.
-_MIGRATIONS = [
-    "ALTER TABLE constellations ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
-    "ALTER TABLE constellation_members ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
-]
-
-# core_role_defaults needs save_profile baked into its PRIMARY KEY, which
-# ALTER TABLE ADD COLUMN can't retrofit onto an already-existing table --
-# but it's pure derived/cache data (relearned automatically the next time
-# each core part is seen tagged), so an old copy of the table is just
-# dropped and recreated rather than migrated in place.
-
 VALID_TYPES = {"unknown", "booster", "satellite", "station", "capsule", "lander", "probe", "docking"}
+
+
+# --- Migrations ---------------------------------------------------------
+# Numbered and recorded, rather than re-derived by inspecting PRAGMA output
+# on every startup. Each entry is (version, description, function), runs
+# exactly once against a database at the preceding version, and the reached
+# version is stored in `meta`. Adding a migration means appending to this
+# list; never edit an entry that has already shipped, since someone's
+# database has already run it.
+#
+# A brand-new database gets the current shape from SCHEMA directly and is
+# simply stamped at the latest version without running any of these.
+
+def _migrate_add_profile_columns(conn):
+    """Save profiles arrived after these tables already existed in real
+    databases. A failure here just means the column was already present.
+
+    `vessels` is included defensively. The previous version of this code
+    omitted it, and the next migration then rebuilds the vessels table with
+    a `SELECT ... save_profile ... FROM vessels_old` -- which fails outright
+    on a database old enough to predate the column. Verified: removing this
+    one line makes the ancient-database upgrade tests fail.
+    """
+    for statement in (
+        "ALTER TABLE vessels ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
+        "ALTER TABLE constellations ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
+        "ALTER TABLE constellation_members ADD COLUMN save_profile TEXT NOT NULL DEFAULT 'default'",
+    ):
+        try:
+            conn.execute(statement)
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+
+def _migrate_vessels_composite_pk(conn):
+    """vessels needs save_profile in its PRIMARY KEY -- id alone isn't
+    enough, since two profiles legitimately contain vessels with the same
+    in-game name.
+
+    Confirmed live as a real bug, not theoretical: with the old
+    single-column PK, switching to a second profile threw "UNIQUE
+    constraint failed: vessels.id" on every single tick the moment a vessel
+    with a name already used in another profile was seen again, silently
+    breaking the vessel list entirely.
+
+    SQLite cannot alter a primary key in place, so the table is rebuilt.
+    This one holds real user data (custom names, notes) that cannot be
+    regenerated, so rows are copied across rather than dropped.
+    """
+    pk_cols = [row["name"] for row in conn.execute("PRAGMA table_info(vessels)").fetchall() if row["pk"] > 0]
+    if pk_cols == ["id", "save_profile"]:
+        return
+    conn.execute("ALTER TABLE vessels RENAME TO vessels_old")
+    conn.execute(
+        "CREATE TABLE vessels ("
+        "id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'unknown', "
+        "notes TEXT DEFAULT '', save_profile TEXT NOT NULL DEFAULT 'default', "
+        "first_seen TEXT NOT NULL DEFAULT (datetime('now')), "
+        "last_seen TEXT NOT NULL DEFAULT (datetime('now')), "
+        "PRIMARY KEY (id, save_profile))"
+    )
+    conn.execute(
+        "INSERT INTO vessels (id, name, type, notes, save_profile, first_seen, last_seen) "
+        "SELECT id, name, type, notes, save_profile, first_seen, last_seen FROM vessels_old"
+    )
+    conn.execute("DROP TABLE vessels_old")
+
+
+def _migrate_core_role_defaults_pk(conn):
+    """Same composite-key problem as vessels, but this table is pure
+    derived cache -- relearned automatically the next time each core part
+    is seen tagged -- so it is cheaper to drop and recreate than to copy."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(core_role_defaults)").fetchall()}
+    if "save_profile" in cols:
+        return
+    conn.execute("DROP TABLE core_role_defaults")
+    conn.execute(
+        "CREATE TABLE core_role_defaults ("
+        "part_name TEXT NOT NULL, category TEXT NOT NULL, detail TEXT DEFAULT '', "
+        "save_profile TEXT NOT NULL DEFAULT 'default', PRIMARY KEY (part_name, save_profile))"
+    )
+
+
+MIGRATIONS = [
+    (1, "add save_profile columns", _migrate_add_profile_columns),
+    (2, "rebuild vessels with composite primary key", _migrate_vessels_composite_pk),
+    (3, "rebuild core_role_defaults with composite primary key", _migrate_core_role_defaults_pk),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+
+
+def _get_schema_version(conn):
+    row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    return int(row["value"]) if row else 0
+
+
+def _set_schema_version(conn, version):
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (str(version),),
+    )
 
 
 def init_db():
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not DB_PATH.exists()
     with get_conn() as conn:
         conn.executescript(SCHEMA)
-        for statement in _MIGRATIONS:
-            try:
-                conn.execute(statement)
-            except sqlite3.OperationalError:
-                pass  # column already exists
 
-        # vessels needs save_profile baked into its PRIMARY KEY (id alone
-        # isn't enough -- two different profiles legitimately have vessels
-        # with the same in-game name). Unlike the ADD COLUMN migrations
-        # above, changing a primary key needs a real table rebuild -- and
-        # unlike core_role_defaults, this table holds real user data
-        # (custom names/notes), so it's copied over rather than dropped.
-        # Confirmed live as a real bug, not theoretical: with the old
-        # single-column PK, switching to a second profile threw "UNIQUE
-        # constraint failed: vessels.id" on every single tick the moment a
-        # vessel with a name already used in another profile was seen
-        # again, silently breaking the vessel list entirely.
-        pk_cols = [row["name"] for row in conn.execute("PRAGMA table_info(vessels)").fetchall() if row["pk"] > 0]
-        if pk_cols != ["id", "save_profile"]:
-            conn.execute("ALTER TABLE vessels RENAME TO vessels_old")
-            conn.execute(
-                "CREATE TABLE vessels ("
-                "id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'unknown', "
-                "notes TEXT DEFAULT '', save_profile TEXT NOT NULL DEFAULT 'default', "
-                "first_seen TEXT NOT NULL DEFAULT (datetime('now')), "
-                "last_seen TEXT NOT NULL DEFAULT (datetime('now')), "
-                "PRIMARY KEY (id, save_profile))"
-            )
-            conn.execute(
-                "INSERT INTO vessels (id, name, type, notes, save_profile, first_seen, last_seen) "
-                "SELECT id, name, type, notes, save_profile, first_seen, last_seen FROM vessels_old"
-            )
-            conn.execute("DROP TABLE vessels_old")
+        if is_new:
+            # SCHEMA already describes the current shape, so there is
+            # nothing to migrate -- just record where we are.
+            _set_schema_version(conn, SCHEMA_VERSION)
+            return
 
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(core_role_defaults)").fetchall()}
-        if "save_profile" not in cols:
-            conn.execute("DROP TABLE core_role_defaults")
-            conn.execute(
-                "CREATE TABLE core_role_defaults ("
-                "part_name TEXT NOT NULL, category TEXT NOT NULL, detail TEXT DEFAULT '', "
-                "save_profile TEXT NOT NULL DEFAULT 'default', PRIMARY KEY (part_name, save_profile))"
-            )
+        current = _get_schema_version(conn)
+        for version, description, migrate in MIGRATIONS:
+            if version <= current:
+                continue
+            logger.info("Applying database migration %d: %s", version, description)
+            migrate(conn)
+            _set_schema_version(conn, version)
 
 
 @contextmanager

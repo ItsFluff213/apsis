@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -24,18 +25,22 @@ logger = logging.getLogger("main")
 
 FRONTEND_DIR = BUNDLE_DIR / "frontend"
 
-app = FastAPI(title="KSP Autonomous Fleet Control")
-
 db.init_db()
 client = KRPCClient()
 registry = VesselRegistry(client)
 jobs = JobManager()
 
 
-@app.on_event("startup")
-def on_startup():
+@asynccontextmanager
+async def lifespan(app):
+    # Replaces the deprecated @app.on_event("startup") hook, which current
+    # FastAPI warns about and will eventually drop.
     logger.info("Starting kRPC connection watchdog (will keep retrying until KSP + kRPC server are up)...")
     client.connect_in_background()
+    yield
+
+
+app = FastAPI(title="KSP Autonomous Fleet Control", lifespan=lifespan)
 
 
 app.include_router(routes_vessels.build_router(registry))

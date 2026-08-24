@@ -112,6 +112,13 @@ class VesselRegistry:
     def __init__(self, krpc_client):
         self._client = krpc_client
 
+    @property
+    def is_connected(self):
+        """Whether kRPC is currently reachable. Exposed here so callers
+        (the telemetry websocket) don't have to reach through to the
+        private client handle to find out."""
+        return self._client.is_connected
+
     def sync(self):
         """Scan every vessel kRPC currently knows about, register any new
         ones, and re-apply each vessel's core tag as its type (authoritative
