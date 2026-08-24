@@ -41,9 +41,31 @@ _KSP_TYPE_MAP = {
 
 def _keyed_vessels(vessels):
     """Yields (key, vessel) pairs, disambiguating vessels that currently
-    share the same in-game name (e.g. "Ship", "Ship #2")."""
+    share the same in-game name (e.g. "Ship", "Ship #2").
+
+    Confirmed live: sc.vessels is NOT returned in a stable order between
+    calls -- with two same-named vessels, which one kRPC lists first can
+    flip from one poll to the next. Assigning "#1"/"#2" by raw enumeration
+    order therefore let the SAME physical vessel's key swap back and forth
+    every couple seconds, which silently broke everything keyed on vessel
+    id downstream: the frontend's card-reuse-by-id logic (each swap looked
+    like "vessel disappeared, new one appeared", tearing down and rebuilding
+    the DOM node mid-interaction), the in-memory running-job map (a job
+    started under one key became invisible the moment the key flipped to
+    the other vessel), and per-vessel sqlite rows. Confirmed live: this is
+    what made a real launch look like it silently wasn't happening --
+    the ascent job kept running, just under a key the UI had already
+    swapped away from.
+
+    Each kRPC vessel proxy carries a private but per-connection-stable
+    `_object_id` (confirmed live: identical across repeated sc.vessels
+    calls for the same physical vessel, within one connection's lifetime).
+    Sorting by it before assigning suffixes makes the disambiguation itself
+    stable for as long as the backend stays connected, instead of depending
+    on kRPC's enumeration order."""
+    ordered = sorted(vessels, key=lambda v: getattr(v, "_object_id", 0))
     seen_counts = {}
-    for vessel in vessels:
+    for vessel in ordered:
         seen_counts[vessel.name] = seen_counts.get(vessel.name, 0) + 1
         n = seen_counts[vessel.name]
         key = vessel.name if n == 1 else f"{vessel.name} #{n}"
