@@ -63,11 +63,23 @@ def capture_and_circularize(client, vessel, job, body, target_periapsis_m, targe
     node = maneuver.change_periapsis_node(client, vessel, target_periapsis_m, burn_at="apoapsis")
     maneuver.execute_node(client, vessel, job, node)
 
+    # --- Plane change BEFORE circularizing, not after ---
+    # A plane change costs in proportion to how fast you are going, and the
+    # craft is never slower than it is now, way out at the capture orbit's
+    # apoapsis. Doing it here instead of on the final circular orbit is the
+    # difference between roughly 166 m/s and 722 m/s for a polar orbit
+    # around Mun -- 556 m/s of pure waste, which is more spare fuel than a
+    # typical Mun craft has after capture, so the expensive ordering would
+    # simply run the tank dry partway through the burn.
+    #
+    # Circularizing afterwards is safe: the plane change rotates the
+    # velocity vector without changing its magnitude, so the orbit's shape
+    # is untouched and its periapsis is still where the next burn expects.
+    if target_inclination_deg is not None:
+        job.message = f"adjusting inclination around {body.name} (cheap out here, before circularizing)"
+        node = maneuver.change_inclination_node(client, vessel, target_inclination_deg)
+        maneuver.execute_node(client, vessel, job, node)
+
     job.message = f"circularizing at {body.name}"
     node = maneuver.circularize_node(client, vessel, at="periapsis")
     maneuver.execute_node(client, vessel, job, node)
-
-    if target_inclination_deg is not None:
-        job.message = f"adjusting inclination around {body.name}"
-        node = maneuver.change_inclination_node(client, vessel, target_inclination_deg)
-        maneuver.execute_node(client, vessel, job, node)

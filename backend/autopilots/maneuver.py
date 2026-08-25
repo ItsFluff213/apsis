@@ -128,18 +128,40 @@ def change_inclination_node(client, vessel, target_inclination_deg):
     SOI entirely instead of just re-tilting its orbit. Splitting the burn
     into prograde*(cos(di)-1) and normal*sin(di) instead rotates the
     velocity vector while preserving its magnitude exactly, for any angle,
-    which is what a plane-change-only maneuver actually requires."""
+    which is what a plane-change-only maneuver actually requires.
+
+    A plane change is priced by how fast you are travelling when you make
+    it -- the cost scales directly with orbital speed -- so on an
+    eccentric orbit it matters enormously *where* it happens. Both the
+    ascending and descending node are valid points to rotate the plane
+    about, and they sit half an orbit apart, so one of them is always the
+    higher (slower, cheaper) of the two. This picks that one.
+
+    Concretely, for a 90 degree change around Mun: on the elliptical
+    capture orbit, at apoapsis, roughly 166 m/s. On a circular 50km orbit,
+    722 m/s. Same maneuver, four times the fuel, purely from when it is
+    done. On a circular orbit both nodes are equivalent and this reduces to
+    the old behaviour."""
     sc = client.space_center
     orbit = vessel.orbit
     delta_inclination = math.radians(target_inclination_deg) - orbit.inclination
 
-    ta_an = (-orbit.argument_of_periapsis) % (2 * math.pi)
-    ut = orbit.ut_at_true_anomaly(ta_an)
+    ta_ascending = (-orbit.argument_of_periapsis) % (2 * math.pi)
+    ta_descending = (ta_ascending + math.pi) % (2 * math.pi)
+
+    # Whichever node is further out is the slower one, and therefore the
+    # cheaper place to rotate the plane.
+    candidates = []
+    for true_anomaly in (ta_ascending, ta_descending):
+        radius = orbit.radius_at_true_anomaly(true_anomaly)
+        candidates.append((radius, true_anomaly))
+    radius, true_anomaly = max(candidates)
+
+    ut = orbit.ut_at_true_anomaly(true_anomaly)
     if ut < sc.ut:
         ut += orbit.period
 
-    r = orbit.radius_at_true_anomaly(ta_an)
-    v = vis_viva_speed(orbit.body.gravitational_parameter, r, orbit.semi_major_axis)
+    v = vis_viva_speed(orbit.body.gravitational_parameter, radius, orbit.semi_major_axis)
     prograde_dv = v * (math.cos(delta_inclination) - 1)
     normal_dv = v * math.sin(delta_inclination)
 
