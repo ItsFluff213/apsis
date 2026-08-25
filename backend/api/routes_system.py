@@ -45,6 +45,12 @@ def build_router(client):
                 "eccentricity": ecc,
                 "radius_m": radius_m,
                 "argument_of_periapsis_deg": math.degrees(orbit.argument_of_periapsis) % 360,
+                # Real orbital tilt, e.g. Moho ~7 deg, Eeloo ~6.15 deg -- the
+                # map used to force every body onto one flat plane regardless
+                # of this, which looked tidy but wasn't what the system
+                # actually looks like. Added so the 3D map can tilt each
+                # body's actual position, not just draw a flat ring under it.
+                "inclination_deg": math.degrees(orbit.inclination),
             })
         return result
 

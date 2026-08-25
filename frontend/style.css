@@ -637,3 +637,16 @@ body[data-tab="overview"] .vessel-card:hover .vessel-detail {
 .part-tag { color: var(--accent); }
 
 .vessel-name-static { font-weight: 600; flex: 1; }
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dim);
+  cursor: pointer;
+}
+.checkbox-label input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: auto;
+}

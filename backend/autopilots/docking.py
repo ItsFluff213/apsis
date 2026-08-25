@@ -396,8 +396,23 @@ def _final_approach(client, vessel, job, own_port, target_port, timeout_s=300):
 
 # --- Entry points --------------------------------------------------------
 
-def run_docking(client, registry, vessel, job, target_vessel_id, own_port_tag=None, target_port_tag=None):
-    """Rendezvous with another craft and dock with it."""
+def run_docking(client, registry, vessel, job, target_vessel_id, own_port_tag=None, target_port_tag=None,
+                skip_rendezvous=False):
+    """Rendezvous with another craft and dock with it.
+
+    skip_rendezvous=True is the "just docking" mode: go straight to the RCS
+    approach (phase 2 onward) and never touch phase 1's plane-match/Hohmann/
+    phasing sequence, regardless of how far apart the craft currently are.
+
+    Phase 1 already skips itself automatically when the craft are already
+    within APPROACH_HANDOVER_M -- so ordinarily nothing needs to ask for
+    this. It exists for the times that automatic distance check isn't what
+    you want: the craft were brought close by hand (or by a previous manual
+    rendezvous) but the *shape* of their orbits still differs enough that
+    the distance check wouldn't trigger reliably, or you'd simply rather
+    fly the approach yourself-by-autopilot without spending time and fuel
+    on a rendezvous sequence you know you don't need.
+    """
     sc = client.space_center
 
     target = registry.get_vessel_object(target_vessel_id)
@@ -428,9 +443,12 @@ def run_docking(client, registry, vessel, job, target_vessel_id, own_port_tag=No
 
     sc.target_vessel = target
 
-    # --- Phase 1: rendezvous ---
+    # --- Phase 1: rendezvous (unless explicitly skipped) ---
     frame = vessel.orbit.body.non_rotating_reference_frame
-    if _distance(vessel.position(frame), target.position(frame)) > APPROACH_HANDOVER_M:
+    distance = _distance(vessel.position(frame), target.position(frame))
+    if skip_rendezvous:
+        job.message = f"skipping rendezvous -- going straight to approach ({distance:.0f} m out)"
+    elif distance > APPROACH_HANDOVER_M:
         _match_planes(client, vessel, job, target)
         _hohmann_to_target_orbit(client, vessel, job, target)
         if not _phase_to_target(client, vessel, job, target):

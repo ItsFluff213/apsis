@@ -22,6 +22,7 @@ changes as craft are created, staged and destroyed, which is a larger
 change than this pass -- noted here so it isn't mistaken for an oversight.
 """
 
+import math
 import threading
 
 RAD_TO_DEG = 57.29577951308232
@@ -60,12 +61,34 @@ def forget_vessel(vessel):
             del _flight_cache[key]
 
 
+def _finite_or_none(value):
+    """NaN and +/-Infinity are valid Python floats but not valid JSON --
+    Python's json module serializes them anyway as the bare tokens NaN/
+    Infinity, which is a non-standard extension no JSON.parse() accepts.
+
+    Confirmed live: kRPC hands back NaN for orbital elements in some
+    scene/state transitions -- a vessel that's on rails outside physics
+    range, mid-decouple, or briefly parentless during a docking event, all
+    produced a plausible NaN somewhere in this dict. Since NaN is not an
+    exception, the try/except around get_telemetry() in vessel_registry.py
+    never caught it -- it sailed straight through into the response body,
+    where it broke every OTHER vessel's telemetry in the same message too:
+    the whole websocket payload is one JSON document, so JSON.parse()
+    failing on this one bad field threw away the entire tick for every
+    craft, not just the affected one, and repeated every 0.5s for as long
+    as the condition lasted.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def get_telemetry(vessel):
     orbit = vessel.orbit
     body = orbit.body
     flight = _cached_flight(vessel, body)
 
-    return {
+    raw = {
         "altitude": flight.mean_altitude,
         "surface_altitude": flight.surface_altitude,
         "speed": flight.speed,
@@ -76,9 +99,18 @@ def get_telemetry(vessel):
         "inclination_deg": orbit.inclination * RAD_TO_DEG,
         "true_anomaly_deg": orbit.true_anomaly * RAD_TO_DEG,
         "eccentricity": orbit.eccentricity,
+        # Where periapsis actually points. The System Overview map used to
+        # have no way to know this and drew every vessel's orbit as if
+        # periapsis pointed the same arbitrary direction -- fine for a
+        # near-circular orbit (there's no periapsis direction to get wrong)
+        # but visibly wrong for anything eccentric, and it meant two
+        # vessels with genuinely different orbit orientations were drawn
+        # identically oriented.
+        "argument_of_periapsis_deg": orbit.argument_of_periapsis * RAD_TO_DEG,
         "body": body.name,
         "latitude": flight.latitude,
         "longitude": flight.longitude,
         "situation": vessel.situation.name,
         "stage": vessel.control.current_stage,
     }
+    return {key: _finite_or_none(value) for key, value in raw.items()}

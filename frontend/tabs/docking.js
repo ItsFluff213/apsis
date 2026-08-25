@@ -98,6 +98,12 @@ function buildDockingControls(host, vessel) {
       <button class="dock-start primary">Rendezvous &amp; dock</button>
     </div>
     <div class="control-group">
+      <label class="checkbox-label">
+        <input type="checkbox" class="dock-skip-rendezvous" />
+        Just dock -- already close, skip the automatic rendezvous
+      </label>
+    </div>
+    <div class="control-group">
       <span class="group-label">Transfer</span>
       <select class="res-name">
         ${COMMON_RESOURCES.map((r) => `<option value="${r}">${r}</option>`).join("")}
@@ -125,8 +131,9 @@ function buildDockingControls(host, vessel) {
       status("pick a target craft first", "error");
       return;
     }
+    const skipRendezvous = el(".dock-skip-rendezvous").checked;
     try {
-      await api.startDocking(vessel.id, targetId);
+      await api.startDocking(vessel.id, targetId, null, null, skipRendezvous);
     } catch (e) {
       status(`docking rejected: ${e.message}`, "error");
     }

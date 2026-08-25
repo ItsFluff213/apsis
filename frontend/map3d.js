@@ -1,19 +1,26 @@
 // Real 3D System Overview using Three.js. Exposes a small API on
-// window.Map3D that app.js (a plain classic script, not a module) calls
-// into: init() once, then setBodies()/setVessels() every time fresh data
-// arrives over the existing telemetry WebSocket / system-info poll -- no
-// separate network traffic of its own, this only renders what app.js
-// already fetches.
+// window.Map3D that the dashboard calls into: init() once, then
+// setBodies()/setVessels() every time fresh data arrives over the existing
+// telemetry WebSocket / system-info poll -- no separate network traffic of
+// its own, this only renders what the dashboard already fetches.
 //
-// Bodies are placed using the exact same flat top-down layout app.js's own
-// layoutSystem() already computes (x/y in schematic-or-real-scale units) --
-// just reinterpreted as 3D (x, 0, z) world coordinates, so the actual
-// distances/scaling logic isn't duplicated here. Vessels get a real 3D
-// position: an ellipse in a plane tilted by the vessel's own orbital
-// inclination around its parent body, so an inclined orbit visibly tilts
-// out of the ecliptic instead of always lying flat.
+// Bodies are placed using the layout core/bodies.js computes (x/yOffset/y
+// in schematic-or-real-scale units, yOffset carrying real planetary
+// inclination) -- reinterpreted as 3D (x, yOffset, y) world coordinates, so
+// the actual distance/scale/tilt math isn't duplicated here. Vessels get a
+// real 3D position too: an ellipse in a plane tilted by the vessel's own
+// orbital inclination around its parent body.
+//
+// The orbit geometry itself -- true anomaly to a position relative to the
+// body being orbited -- lives in core/orbit-shape.js and is shared with the
+// moon-transfer preview in tabs/orbit.js. It used to be written
+// independently in three places, and one of those independent copies
+// (this file's vessel-position code) used the wrong formula: seeing that
+// only became possible once there was one function to check instead of
+// three to compare.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { orbitPosition, orbitRingPoints } from "./core/orbit-shape.js";
 
 const CATEGORY_COLORS = {
   booster: 0xff8a4d, satellite: 0x4da3ff, docking: 0xf472b6, station: 0xc084fc,
@@ -317,24 +324,23 @@ function resetView() {
   controls.update();
 }
 
-// positions: Map(name -> {x, y, isMoon, originX, originY, orbitShape}) from
-// app.js's layoutSystem() -- (x, y) here is reinterpreted as the (x, z)
-// ground-plane coordinate. When orbitShape is present (topLevel planets,
-// once /api/system has loaded real orbital elements) the ring is drawn as
-// the body's actual ellipse -- true semi-major axis, eccentricity, and
-// periapsis orientation -- instead of a circle through wherever the body
-// currently sits, which only looks right for a near-circular orbit.
-function ellipseRingPoints(smaScaled, eccentricity, argpDeg) {
-  const segments = 128;
-  const points = [];
-  const argpRad = (argpDeg * Math.PI) / 180;
-  for (let i = 0; i <= segments; i++) {
-    const trueAnomaly = (i / segments) * Math.PI * 2;
-    const r = (smaScaled * (1 - eccentricity * eccentricity)) / (1 + eccentricity * Math.cos(trueAnomaly));
-    const absoluteAngle = argpRad + trueAnomaly;
-    points.push(new THREE.Vector3(r * Math.cos(absoluteAngle), 0, r * Math.sin(absoluteAngle)));
-  }
-  return points;
+// positions: Map(name -> {x, y, yOffset, isMoon, originX, originY,
+// originYOffset, orbitShape}) from core/bodies.js's layoutSystem() -- (x, y)
+// is the ground-plane coordinate, yOffset the (usually zero) vertical
+// displacement from real orbital inclination. When orbitShape is present
+// (topLevel planets, once /api/system has loaded real orbital elements)
+// the ring is drawn as the body's actual ellipse -- true semi-major axis,
+// eccentricity, periapsis orientation, and inclination -- instead of a
+// circle through wherever the body currently sits, which only looked right
+// for a near-circular, uninclined orbit.
+function ellipseRingPoints(smaScaled, eccentricity, argpDeg, inclinationDeg = 0) {
+  const points = orbitRingPoints({
+    semiMajor: smaScaled,
+    eccentricity,
+    argumentOfPeriapsisRad: (argpDeg * Math.PI) / 180,
+    inclinationRad: (inclinationDeg * Math.PI) / 180,
+  });
+  return points.map((p) => new THREE.Vector3(p.x, p.y, p.z));
 }
 
 function setBodies(positions) {
@@ -360,22 +366,31 @@ function setBodies(positions) {
       entry = { mesh, ring, ringKind: null, baseSize: baseSizeForBody(name, pos.isMoon) };
       bodyMeshes.set(name, entry);
     }
-    entry.mesh.position.set(pos.x, 0, pos.y);
+    entry.mesh.position.set(pos.x, pos.yOffset || 0, pos.y);
 
     if (pos.orbitShape) {
       // Real ellipse, centered on the parent body (origin), not on this
       // body's own position -- an ellipse isn't centered on either focus.
-      const key = `${pos.orbitShape.smaScaled}|${pos.orbitShape.eccentricity}|${pos.orbitShape.argpDeg}`;
+      // Every topLevel body orbits the Sun, which sits at true (0,0,0) with
+      // no tilt of its own, so the ring's origin itself is never offset --
+      // only the ring's own shape tilts, via inclinationDeg below.
+      const key = `${pos.orbitShape.smaScaled}|${pos.orbitShape.eccentricity}|${pos.orbitShape.argpDeg}|${pos.orbitShape.inclinationDeg}`;
       if (entry.ringKind !== key) {
-        const pts = ellipseRingPoints(pos.orbitShape.smaScaled, pos.orbitShape.eccentricity, pos.orbitShape.argpDeg);
+        const pts = ellipseRingPoints(
+          pos.orbitShape.smaScaled, pos.orbitShape.eccentricity,
+          pos.orbitShape.argpDeg, pos.orbitShape.inclinationDeg,
+        );
         entry.ring.geometry.dispose();
         entry.ring.geometry = new THREE.BufferGeometry().setFromPoints(pts);
         entry.ringKind = key;
       }
-      entry.ring.position.set(pos.originX, 0, pos.originY);
+      entry.ring.position.set(pos.originX, pos.originYOffset || 0, pos.originY);
       entry.ring.scale.set(1, 1, 1);
     } else {
-      // Moons: schematic circle around their parent, as before.
+      // Moons: schematic circle around their parent, as before -- but now
+      // centered at the parent's real (possibly tilted) position rather
+      // than always y=0, so the circle stays visually attached to the
+      // planet even when the planet itself is drawn tilted.
       if (entry.ringKind !== "circle") {
         const pts = [];
         const segments = 128;
@@ -387,37 +402,49 @@ function setBodies(positions) {
         entry.ring.geometry = new THREE.BufferGeometry().setFromPoints(pts);
         entry.ringKind = "circle";
       }
-      entry.ring.position.set(pos.originX, 0, pos.originY);
+      entry.ring.position.set(pos.originX, pos.originYOffset || 0, pos.originY);
       const orbitRadius = Math.hypot(pos.x - pos.originX, pos.y - pos.originY) || 0.001;
       entry.ring.scale.set(orbitRadius, 1, orbitRadius);
     }
   }
 }
 
-// Schematic (not-to-scale) tilted-ellipse shape around the vessel's parent
-// body -- log-scaled size (so a LKO hop and an interplanetary orbit are
-// both visible on the same map) but real eccentricity/inclination/phase,
-// tilted genuinely out of the ecliptic plane in 3D rather than faking it
-// with a 2D rotation. Shared by the point-position and full-trajectory-
-// trace functions below so they can never disagree with each other.
+// Schematic (not-to-scale) orbit around the vessel's parent body --
+// log-scaled size (so a LKO hop and an interplanetary orbit are both
+// visible on the same map) but real eccentricity, periapsis orientation
+// and inclination, so the SHAPE and ORIENTATION are correct even though
+// the absolute size is compressed for display.
+//
+// This used to compute the vessel's position as
+//   x = semiMajor*cos(trueAnomaly), z = semiMinor*sin(trueAnomaly)
+// which is the formula for a point on an ellipse parameterized by
+// ECCENTRIC anomaly, fed true anomaly instead. Those are different angles
+// on any orbit with real eccentricity, so the plotted point was
+// measurably in the wrong place -- correct at periapsis and apoapsis
+// (where the two anomalies coincide), increasingly wrong in between, by
+// 10-15% of the orbit's radius at e=0.6 and worse beyond that. It also had
+// no periapsis orientation at all (argument_of_periapsis wasn't part of
+// vessel telemetry), so every vessel's ellipse was drawn pointing the same
+// arbitrary direction regardless of where its periapsis actually was.
+//
+// Both are fixed by routing through core/orbit-shape.js's orbitPosition(),
+// the same focus-based conic equation already used correctly for the
+// planet rings and the moon-transfer preview -- this just makes vessels
+// use it too, rather than being the one place with its own, wrong, copy.
 function vesselOrbitShape(telemetry) {
   const apo = Math.max(telemetry.apoapsis_altitude || 0, 0);
   const peri = Math.max(telemetry.periapsis_altitude || 0, 0);
   const avgAlt = (apo + peri) / 2;
   const semiMajor = Math.min(16, 4 + Math.log10(1 + avgAlt) * 1.6);
-  const ecc = Math.min(Math.max(telemetry.eccentricity || 0, 0), 0.9);
-  const semiMinor = semiMajor * Math.sqrt(1 - ecc * ecc);
+  const eccentricity = Math.min(Math.max(telemetry.eccentricity || 0, 0), 0.9);
+  const argumentOfPeriapsisRad = ((telemetry.argument_of_periapsis_deg || 0) * Math.PI) / 180;
   const inclinationRad = ((telemetry.inclination_deg || 0) * Math.PI) / 180;
-  return { semiMajor, semiMinor, inclinationRad };
+  return { semiMajor, eccentricity, argumentOfPeriapsisRad, inclinationRad };
 }
 
 function tiltedEllipsePoint(shape, trueAnomalyRad) {
-  const flatX = shape.semiMajor * Math.cos(trueAnomalyRad);
-  const flatZ = shape.semiMinor * Math.sin(trueAnomalyRad);
-  // Tilt the in-plane Z component out of the ecliptic by inclination.
-  const y = flatZ * Math.sin(shape.inclinationRad);
-  const z = flatZ * Math.cos(shape.inclinationRad);
-  return new THREE.Vector3(flatX, y, z);
+  const p = orbitPosition({ ...shape, trueAnomalyRad });
+  return new THREE.Vector3(p.x, p.y, p.z);
 }
 
 function vesselLocalPosition(telemetry) {
@@ -508,7 +535,12 @@ function setVessels(vessels) {
     // Rebuild the trajectory line only when the orbit shape actually
     // changed (not every tick -- true anomaly alone changing doesn't
     // change the ellipse, just where on it the vessel sits).
-    const trajKey = `${t.apoapsis_altitude}|${t.periapsis_altitude}|${t.inclination_deg}|${t.eccentricity}`;
+    // argument_of_periapsis is now part of the shape (it orients the
+    // ellipse), so a burn that rotates the apsides -- a plane change, or
+    // any burn that isn't purely prograde/retrograde -- must also
+    // invalidate the cached line, or the trajectory would silently keep
+    // showing the orbit's old orientation.
+    const trajKey = `${t.apoapsis_altitude}|${t.periapsis_altitude}|${t.inclination_deg}|${t.eccentricity}|${t.argument_of_periapsis_deg}`;
     if (entry.trajKey !== trajKey) {
       const pts = vesselTrajectoryPoints(t);
       entry.trajectory.geometry.dispose();

@@ -13,6 +13,7 @@
 import * as api from "../core/api.js";
 import { MOON_NAMES, PLANET_NAMES, findSystemNode, parentPlanetOf } from "../core/bodies.js";
 import { fmt, fmtDuration, fmtSpeed } from "../core/format.js";
+import { orbitPosition, orbitRingPoints } from "../core/orbit-shape.js";
 import { reconcileCards } from "../components/vessel-card.js";
 import * as telemetry from "../core/telemetry.js";
 
@@ -243,34 +244,30 @@ async function previewMoon(vessel, moonName, box) {
 // schematic radius around their parent (see core/bodies.js), so the
 // trajectory has to be compressed by the same factor or it won't line up
 // with where the moon is actually shown.
+//
+// Uses the same orbitRingPoints/orbitPosition math as the live map (see
+// core/orbit-shape.js) rather than its own copy of the conic equation --
+// this used to be a third independent implementation of the same formula,
+// and it's exactly the kind of place a fix to one copy and not the others
+// used to go unnoticed. It also used to place the arrival marker with
+// y hardcoded to 0, so on any transfer with real inclination the marker
+// visibly didn't sit on the trajectory line it was supposed to mark; using
+// the same function for both fixes that by construction.
 function drawMoonTransferOnMap(plan, moonName) {
   const moonNode = findSystemNode(moonName);
   if (!moonNode || !window.Map3D) return;
 
   const scale = moonNode.radius / plan.moon_orbital_radius_m;
-  const a = ((plan.r_peri_m + plan.r_apo_m) / 2) * scale;
-  const e = (plan.r_apo_m - plan.r_peri_m) / (plan.r_apo_m + plan.r_peri_m);
-  const periapsisRad = (plan.periapsis_angle_deg * Math.PI) / 180;
-  const inclRad = (plan.inclination_deg * Math.PI) / 180;
-
-  const points = [];
-  const segments = 96;
-  for (let i = 0; i <= segments; i++) {
-    const trueAnomaly = (i / segments) * Math.PI * 2;
-    const r = (a * (1 - e * e)) / (1 + e * Math.cos(trueAnomaly));
-    const absAngle = periapsisRad + trueAnomaly;
-    const flatX = r * Math.cos(absAngle);
-    const flatZ = r * Math.sin(absAngle);
-    points.push({ x: flatX, y: flatZ * Math.sin(inclRad), z: flatZ * Math.cos(inclRad) });
-  }
-
-  // Arrival is exactly the apoapsis, half a revolution from periapsis.
-  const arrivalAngle = periapsisRad + Math.PI;
-  const arrivalMarker = {
-    x: plan.r_apo_m * scale * Math.cos(arrivalAngle),
-    y: 0,
-    z: plan.r_apo_m * scale * Math.sin(arrivalAngle),
+  const orbitParams = {
+    semiMajor: ((plan.r_peri_m + plan.r_apo_m) / 2) * scale,
+    eccentricity: (plan.r_apo_m - plan.r_peri_m) / (plan.r_apo_m + plan.r_peri_m),
+    argumentOfPeriapsisRad: (plan.periapsis_angle_deg * Math.PI) / 180,
+    inclinationRad: (plan.inclination_deg * Math.PI) / 180,
   };
+
+  const points = orbitRingPoints(orbitParams, 96);
+  // Arrival is exactly the apoapsis, half a revolution from periapsis.
+  const arrivalMarker = orbitPosition({ ...orbitParams, trueAnomalyRad: Math.PI });
 
   const parent = parentPlanetOf(moonName) || "Kerbin";
   window.Map3D.showTransferPreview(parent, points, arrivalMarker);

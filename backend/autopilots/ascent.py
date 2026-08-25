@@ -203,18 +203,25 @@ def _delta_v_capacity(vessel):
 
 def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, target_inclination_deg=0.0,
                turn_start_altitude_m=1000, turn_end_altitude_m=45000):
-    """turn_start_altitude_m is where the gravity turn is allowed to begin,
-    but the actual trigger is PITCH_KICK_SPEED_MS -- speed, not altitude,
-    is what determines whether the craft can steer. The altitude is a floor
-    so a very high-thrust craft doesn't try to pitch over while still
-    metres off the pad.
+    """The pitch kick fires purely on PITCH_KICK_SPEED_MS -- speed, not
+    altitude, is what determines whether the craft has aerodynamic and
+    gimbal authority to steer, and there is no altitude floor gating it.
 
-    Note this is much lower (1km) than the 10km the old pitch-schedule
-    version used. That 10km existed to limit the damage of turning at high
-    angle of attack in thick air -- with prograde-following there is no
-    angle of attack to speak of, so starting the turn early is both safe
-    and considerably cheaper: turning low and slow is exactly when gravity
-    has the most leverage to do the work for free.
+    An earlier version also required `altitude >= turn_start_altitude_m`
+    before the kick could fire, on the reasoning that a very high-thrust
+    craft might otherwise pitch over while still metres off the pad. That
+    reasoning doesn't hold up: PITCH_KICK_SPEED_MS is itself the real
+    gate -- a craft can't be going 60 m/s while still on the pad -- so the
+    altitude check was a redundant restriction that only ever delayed the
+    turn, never protected anything. With prograde-following and the AoA
+    clamp, there is no angle-of-attack risk to guard against by holding
+    off, so turning the moment the craft has real airspeed is both safe
+    and strictly cheaper: turning low and slow is exactly when gravity has
+    the most leverage to do the work for free.
+
+    turn_start_altitude_m therefore no longer gates the kick at all -- it
+    only sets where `_schedule_pitch`'s floor starts ramping down, which is
+    a backstop for a sluggish climb, not the normal path.
     """
     sc = client.space_center
 
@@ -273,7 +280,10 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
             apoapsis = vessel.orbit.apoapsis_altitude
             in_atmosphere = bool(atmosphere_depth) and altitude < atmosphere_depth
 
-            if not kicked and altitude >= turn_start_altitude_m and flight.speed >= PITCH_KICK_SPEED_MS:
+            # Speed alone gates the kick -- no altitude floor. See the
+            # docstring above for why an altitude gate here was a pure
+            # restriction with nothing behind it.
+            if not kicked and flight.speed >= PITCH_KICK_SPEED_MS:
                 kicked = True
                 job.message = "pitch kick -- starting gravity turn"
 

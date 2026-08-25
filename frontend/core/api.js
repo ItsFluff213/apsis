@@ -87,10 +87,13 @@ export const startLanding = (id, lat, lon) =>
 
 export const startBoosterReturn = (id) => request(autopilot(id, "/booster-return"), { method: "POST" });
 
-export const startDocking = (id, targetVesselId, ownPortTag = null, targetPortTag = null) =>
+export const startDocking = (id, targetVesselId, ownPortTag = null, targetPortTag = null, skipRendezvous = false) =>
   request(autopilot(id, "/dock"), {
     method: "POST",
-    body: { target_vessel_id: targetVesselId, own_port_tag: ownPortTag, target_port_tag: targetPortTag },
+    body: {
+      target_vessel_id: targetVesselId, own_port_tag: ownPortTag, target_port_tag: targetPortTag,
+      skip_rendezvous: skipRendezvous,
+    },
   });
 
 export const transferResource = (id, resourceName, amount = null, toTarget = true) =>

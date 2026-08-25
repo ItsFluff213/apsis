@@ -55,7 +55,22 @@ export function connect() {
   socket.onerror = () => socket.close();
 
   socket.onmessage = (event) => {
-    const data = JSON.parse(event.data);
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch (e) {
+      // Confirmed live: a NaN in one vessel's telemetry (see the backend
+      // fix in telemetry.py) made the *entire* tick's JSON invalid, so
+      // every craft's display silently stopped updating for that tick --
+      // not just the affected vessel -- and repeated on every subsequent
+      // tick for as long as the condition lasted, with the connection
+      // indicator still showing "connected" throughout. The real fix is
+      // server-side (never emit invalid JSON), but failing loud-but-safe
+      // here means a future bad payload degrades to "one skipped tick"
+      // instead of a wall of uncaught exceptions.
+      console.error("telemetry: skipping malformed message", e);
+      return;
+    }
     setConnectionState(data.krpc_connected ? "open" : "waiting-for-ksp");
     lastSnapshot = data;
     publish();

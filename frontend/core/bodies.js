@@ -77,6 +77,7 @@ const live = {
   radius: new Map(),   // name -> real instantaneous orbital radius, m
   ecc: new Map(),      // name -> eccentricity
   argp: new Map(),     // name -> argument of periapsis, deg
+  incl: new Map(),     // name -> orbital inclination, deg
 };
 
 export async function refreshSystem() {
@@ -88,6 +89,7 @@ export async function refreshSystem() {
     live.radius = new Map(bodies.filter((b) => b.radius_m).map((b) => [b.name, b.radius_m]));
     live.ecc = new Map(bodies.map((b) => [b.name, b.eccentricity || 0]));
     live.argp = new Map(bodies.map((b) => [b.name, b.argument_of_periapsis_deg || 0]));
+    live.incl = new Map(bodies.map((b) => [b.name, b.inclination_deg || 0]));
   } catch (e) {
     // kRPC not connected yet, or the request failed. Keep the last known
     // data rather than blanking the map.
@@ -107,19 +109,38 @@ function radiusFor(node) {
 
 /**
  * World-space layout with the Sun at the origin, handed to map3d.js as
- * (x, 0, z). Each top-level entry also carries its real orbit shape so the
- * map can draw the actual ellipse rather than a circle through the current
- * radius.
+ * (x, yOffset, z). Each top-level entry also carries its real orbit shape
+ * so the map can draw the actual ellipse rather than a circle through the
+ * current radius.
+ *
+ * yOffset carries real orbital inclination for top-level planets (e.g. Moho
+ * ~7 degrees, Eeloo ~6.15) -- previously every body was forced onto one
+ * flat plane regardless of its actual tilt, which was tidy but is not what
+ * the system actually looks like. A moon inherits its parent's yOffset
+ * (the whole subsystem moves together) rather than getting its own tilt --
+ * moon-around-planet inclinations are typically small in the stock system
+ * and this keeps the moon's own schematic circle simple; only the planet's
+ * tilt relative to the Sun is modelled here.
  */
 export function layoutSystem() {
   const positions = new Map();
 
-  function place(node, originX, originY) {
+  function place(node, originX, originY, originYOffset) {
     const angle = live.angles.has(node.name) ? live.angles.get(node.name) : node.angle;
     const radius = radiusFor(node);
     const rad = (angle * Math.PI) / 180;
+    const inclinationRad = node.topLevel ? ((live.incl.get(node.name) || 0) * Math.PI) / 180 : 0;
+
     const x = originX + radius * Math.cos(rad);
-    const y = originY + radius * Math.sin(rad);
+    // The "sideways" component splits into a horizontal part (added to y,
+    // same role it always had) and a vertical part (yOffset) by
+    // inclination -- at inclination 0 this reduces exactly to the previous
+    // flat behaviour. A non-topLevel node always gets inclinationRad = 0
+    // here, so it contributes no tilt of its own but still inherits
+    // originYOffset from its parent.
+    const sideways = radius * Math.sin(rad);
+    const y = originY + sideways * Math.cos(inclinationRad);
+    const yOffset = originYOffset + sideways * Math.sin(inclinationRad);
 
     let orbitShape = null;
     if (node.topLevel && live.sma.has(node.name)) {
@@ -127,15 +148,16 @@ export function layoutSystem() {
         smaScaled: live.sma.get(node.name) / SMA_SCALE,
         eccentricity: live.ecc.get(node.name) || 0,
         argpDeg: live.argp.get(node.name) || 0,
+        inclinationDeg: live.incl.get(node.name) || 0,
       };
     }
 
     positions.set(node.name, {
-      x, y, isMoon: !node.topLevel && node.name !== "Sun", originX, originY, orbitShape,
+      x, y, yOffset, isMoon: !node.topLevel && node.name !== "Sun", originX, originY, originYOffset, orbitShape,
     });
-    for (const child of node.children || []) place(child, x, y);
+    for (const child of node.children || []) place(child, x, y, yOffset);
   }
 
-  place(SYSTEM_TREE, 0, 0);
+  place(SYSTEM_TREE, 0, 0, 0);
   return positions;
 }

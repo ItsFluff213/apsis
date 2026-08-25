@@ -48,6 +48,11 @@ class DockingRequest(BaseModel):
     target_vessel_id: str
     own_port_tag: str | None = None
     target_port_tag: str | None = None
+    # "Just docking": skip the automated rendezvous (plane match, Hohmann
+    # transfer, phasing) and go straight to the RCS approach. For when the
+    # craft are already close and you don't want the autopilot spending
+    # time/fuel deciding whether a rendezvous is needed.
+    skip_rendezvous: bool = False
 
 
 class ResourceTransferRequest(BaseModel):
@@ -140,6 +145,7 @@ def build_router(client, registry, jobs):
                 target_vessel_id=body.target_vessel_id,
                 own_port_tag=body.own_port_tag,
                 target_port_tag=body.target_port_tag,
+                skip_rendezvous=body.skip_rendezvous,
             ),
             body.model_dump(),
         )
