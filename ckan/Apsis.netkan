@@ -13,9 +13,7 @@
         "bugtracker": "https://github.com/ItsFluff213/apsis/issues"
     },
     "depends": [
-        { "name": "ModuleManager" }
-    ],
-    "recommends": [
+        { "name": "ModuleManager" },
         { "name": "kRPC" }
     ],
     "install": [
