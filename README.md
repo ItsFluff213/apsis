@@ -1,5 +1,10 @@
 # Apsis
 
+[![Latest release](https://img.shields.io/github/v/release/ItsFluff213/apsis?include_prereleases&label=release&color=informational)](https://github.com/ItsFluff213/apsis/releases/latest)
+[![kRPC](https://img.shields.io/badge/kRPC-0.6.0-orange)](https://krpc.github.io/krpc/)
+[![License](https://img.shields.io/github/license/ItsFluff213/apsis)](LICENSE)
+[![Built with Claude](https://img.shields.io/badge/built%20with-Claude-8A63D2)](AI_USAGE.md)
+
 A local web dashboard that flies Kerbal Space Program craft autonomously via
 [kRPC](https://krpc.github.io/krpc/). It handles ascent to orbit, transfers to
 moons and to other planets, landing at a waypoint, returning a spent booster
@@ -10,9 +15,12 @@ Transfer planning is done in-house. Earlier versions required computing a
 trajectory on an external website and pasting the result in; that is no
 longer needed for anything.
 
-**This project was built with AI assistance (Claude) throughout, and is
-still an actively-evolving hobby project, not a polished/audited release.**
-See [AI_USAGE.md](AI_USAGE.md) for details on how it was built and tested.
+> [!IMPORTANT]
+> **This project was built with AI assistance (Claude) throughout**, and is
+> still an actively-evolving hobby project, not a polished/audited release.
+> See [AI_USAGE.md](AI_USAGE.md) for exactly what that meant in practice --
+> what Claude wrote, what was verified by live-flying it, and what hasn't
+> been yet.
 
 ## Setup
 
