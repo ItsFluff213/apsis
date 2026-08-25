@@ -33,7 +33,8 @@ export function mount(container) {
         Rendezvous, approach and dock with another craft, then move resources
         between them. Both craft must already be in orbit around the same
         body, and the active craft needs RCS with translation authority.
-        Tag a port <code>dock.front</code> to choose which one is used.
+        Pick which port on each craft to use below, or tag a port
+        <code>dock.front</code> in-game to set a default.
       </p>
     </div>
     <div class="card-grid" id="docking-vessels"></div>
@@ -98,6 +99,11 @@ function buildDockingControls(host, vessel) {
       <button class="dock-start primary">Rendezvous &amp; dock</button>
     </div>
     <div class="control-group">
+      <span class="group-label">Ports</span>
+      <select class="dock-own-port"><option value="">-- auto (this craft) --</option></select>
+      <select class="dock-target-port" disabled><option value="">-- auto (target) --</option></select>
+    </div>
+    <div class="control-group">
       <label class="checkbox-label">
         <input type="checkbox" class="dock-skip-rendezvous" />
         Just dock -- already close, skip the automatic rendezvous
@@ -125,15 +131,46 @@ function buildDockingControls(host, vessel) {
   const card = () => cards.get(vessel.id);
   const status = (msg, kind) => card() && card().setStatus(msg, kind);
 
+  // Port pickers exist so a multi-port craft (a station with a front and a
+  // side port, say) can be docked precisely instead of falling back to
+  // "whichever free port docking.py finds first" -- imprecise exactly when
+  // it matters which port gets used. Labels come straight from
+  // list_docking_ports and are valid own_port_tag/target_port_tag values as-is,
+  // covering both a real dock.<detail> tag and the synthetic port0/port1/...
+  // labels an untagged port falls back to.
+  async function populatePortSelect(select, vesselId, placeholder) {
+    const current = select.value;
+    select.innerHTML = `<option value="">${placeholder}</option>`;
+    select.disabled = !vesselId;
+    if (!vesselId) return;
+    try {
+      const ports = await api.listDockingPorts(vesselId);
+      select.innerHTML = `<option value="">${placeholder}</option>` +
+        ports.map((p) => `<option value="${escapeAttr(p.label)}">${escapeHtml(p.title)} (${escapeHtml(p.state)})</option>`).join("");
+      select.value = current;
+    } catch (e) {
+      // Vessel not in physics range, or kRPC hiccup -- leave it on "auto"
+      // rather than surfacing an error for what's just a convenience picker.
+    }
+  }
+
+  populatePortSelect(el(".dock-own-port"), vessel.id, "-- auto (this craft) --");
+
+  el(".dock-target").addEventListener("change", () => {
+    populatePortSelect(el(".dock-target-port"), el(".dock-target").value, "-- auto (target) --");
+  });
+
   el(".dock-start").addEventListener("click", async () => {
     const targetId = el(".dock-target").value;
     if (!targetId) {
       status("pick a target craft first", "error");
       return;
     }
+    const ownPort = el(".dock-own-port").value || null;
+    const targetPort = el(".dock-target-port").value || null;
     const skipRendezvous = el(".dock-skip-rendezvous").checked;
     try {
-      await api.startDocking(vessel.id, targetId, null, null, skipRendezvous);
+      await api.startDocking(vessel.id, targetId, ownPort, targetPort, skipRendezvous);
     } catch (e) {
       status(`docking rejected: ${e.message}`, "error");
     }

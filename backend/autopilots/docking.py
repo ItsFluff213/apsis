@@ -90,12 +90,18 @@ def _stop_translation(control):
     control.up = 0.0
 
 
-def _pick_port(vessel, tag_detail=None):
-    """Choose which docking port on a craft to use. An explicit tag detail
-    wins; otherwise the `dock.front` convention; otherwise any free port."""
+def _pick_port(vessel, port_label=None):
+    """Choose which docking port on a craft to use. An explicit port label
+    wins -- matched against parts.get_docking_ports's labelling, which
+    covers both a real `dock.<detail>` tag and the synthetic `port0`,
+    `port1`, ... labels it falls back to for untagged ports, so a label
+    handed back by list_docking_ports always resolves here too, not just a
+    manually-typed tag. Otherwise the `dock.front` convention; otherwise any
+    free port."""
+    labelled = parts.get_docking_ports(vessel)
+    if port_label and port_label in labelled:
+        return labelled[port_label].docking_port
     tagged = parts.get_tagged_parts(vessel).get("dock", {})
-    if tag_detail and tag_detail in tagged:
-        return tagged[tag_detail].docking_port
     if "front" in tagged:
         return tagged["front"].docking_port
 

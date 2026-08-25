@@ -180,6 +180,29 @@ def get_front_docking_port(vessel):
     return max(ports, key=lambda p: p.part.position(vessel.reference_frame)[1]).part
 
 
+def list_docking_ports(vessel):
+    """Every docking port on a craft, labelled the same way get_docking_ports
+    resolves labels (tag detail if tagged, else port0/port1/... by discovery
+    order) -- so a label from this list is always a valid `own_port_tag` /
+    `target_port_tag` for docking.run_docking, not just for tagged ports.
+
+    Exists so the dashboard can offer an actual port picker instead of
+    forcing every multi-port craft (a station with front and side ports, say)
+    to rely on either in-game tagging or docking.py's "any free port"
+    fallback -- which is exactly imprecise on a craft where it matters which
+    port gets used.
+    """
+    labelled = get_docking_ports(vessel)
+    result = []
+    for label, part in labelled.items():
+        try:
+            state = part.docking_port.state.name
+        except Exception:
+            state = "unknown"
+        result.append({"label": label, "title": part.title, "state": state})
+    return result
+
+
 def get_role_summary(vessel):
     """Human-readable summary of tagged roles, for the dashboard."""
     tagged = get_tagged_parts(vessel)
