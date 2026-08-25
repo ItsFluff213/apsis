@@ -36,6 +36,7 @@ of what a real precision-landing solver does.
 import math
 
 from backend import geo, orbital
+from backend.autopilots import maneuver
 
 # How finely to search one orbit for the best burn point. 240 samples over
 # a ~30 minute low orbit is roughly one every 7 seconds of orbit time --
@@ -74,7 +75,16 @@ def _predict_impact(client, vessel, body, burn_ut, r_peri_target):
 
     # Rotate the burn position forward along the direction of motion by
     # that sweep to get the inertial impact direction.
-    velocity = vessel.orbit.velocity_at(burn_ut, frame)
+    #
+    # Confirmed live: this used to call a `vessel.orbit.velocity_at(...)`
+    # that doesn't exist on kRPC's real Orbit class -- it has
+    # `position_at` but no vector velocity method, only a scalar
+    # `orbital_speed_at`. The very first live landing attempt crashed
+    # immediately with "'Orbit' object has no attribute 'velocity_at'".
+    # Only the orbit's normal direction is actually needed here (not the
+    # full velocity), and maneuver.velocity_at reconstructs a good-enough
+    # vector for that from position_at alone -- see its docstring.
+    velocity = maneuver.velocity_at(vessel.orbit, burn_ut, frame)
     normal = orbital.cross(position, velocity)
     impact_direction = orbital.rotate_about_axis(orbital.norm(position), normal, sweep)
     impact_position = tuple(c * body.equatorial_radius for c in impact_direction)

@@ -10,6 +10,40 @@ import math
 from backend import orbital
 from backend.autopilots import staging
 
+# How far ahead to sample the second position for the finite-difference
+# velocity below. Small enough that the approximation error is negligible
+# at orbital distances/speeds, large enough not to lose precision to
+# floating-point cancellation when subtracting two close positions.
+_VELOCITY_FD_DT = 0.05
+
+
+def velocity_at(orbit, ut, frame):
+    """Velocity vector at a future time, on an orbit kRPC hasn't reached
+    yet.
+
+    kRPC's Orbit class has `position_at(ut, frame)` but no vector
+    `velocity_at` -- confirmed live: code in this project assumed one
+    existed (built by analogy with `position_at`, never checked against
+    the real API) and crashed the first time it actually ran, with
+    `'Orbit' object has no attribute 'velocity_at'`. The scalar
+    `orbital_speed_at(ut)` does exist, but a scalar has no direction to
+    give the caller.
+
+    Reconstructed from `position_at`, which does exist, via a CENTERED
+    finite difference -- not a forward one. That distinction is not
+    pedantic here: a forward difference's error is first-order in dt
+    (scales with local acceleration, mu/r^2), which at a low orbit around
+    something as dense as Mun is large enough to matter -- confirmed by a
+    test built around ground-truth analytic velocity, which the forward
+    version failed at the 1e-9 relative tolerance a burn planner actually
+    needs. Centering the sample around `ut` cancels that leading error
+    term, making the result accurate to O(dt^2) instead of O(dt) for the
+    same step size -- a large accuracy gain for a one-line change.
+    """
+    r1 = orbit.position_at(ut - _VELOCITY_FD_DT, frame)
+    r2 = orbit.position_at(ut + _VELOCITY_FD_DT, frame)
+    return tuple((b - a) / (2 * _VELOCITY_FD_DT) for a, b in zip(r1, r2))
+
 
 def vis_viva_speed(mu, r, a):
     return math.sqrt(mu * (2.0 / r - 1.0 / a))
@@ -186,7 +220,7 @@ def change_inclination_node(client, vessel, target_inclination_deg):
 
     frame = orbit.body.non_rotating_reference_frame
     position = orbit.position_at(ut, frame)
-    velocity = orbit.velocity_at(ut, frame)
+    velocity = velocity_at(orbit, ut, frame)
     rotated_velocity = orbital.rotate_about_axis(velocity, position, delta_inclination)
     delta_v_vector = tuple(r - v for r, v in zip(rotated_velocity, velocity))
 

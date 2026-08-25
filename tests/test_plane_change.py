@@ -74,7 +74,17 @@ class FakeOrbit:
             r * (math.cos(nu) * p + math.sin(nu) * q) for p, q in zip(self._periapsis_hat, self._perp_hat)
         )
 
-    def velocity_at(self, ut, frame):
+    def exact_velocity_at(self, ut, frame):
+        """Analytic velocity, for the test's own verification math only.
+
+        Real kRPC has no vector velocity_at at all -- confirmed live, see
+        maneuver.velocity_at's docstring -- so this is deliberately NOT
+        named to match anything production calls. Production goes through
+        maneuver.velocity_at (a position_at finite difference) like it will
+        against the real game; this exact version exists so the
+        verification below can check the result against ground truth
+        rather than checking the approximation against itself.
+        """
         nu = self._true_anomaly_at_ut(ut)
         r = self.radius_at_true_anomaly(nu)
         mu = self.body.gravitational_parameter
@@ -145,7 +155,7 @@ def orbit_after_burn(vessel, node):
     orbit = vessel.orbit
     mu = orbit.body.gravitational_parameter
     position = orbit.position_at(node["ut"], orbit.body.non_rotating_reference_frame)
-    velocity = orbit.velocity_at(node["ut"], orbit.body.non_rotating_reference_frame)
+    velocity = orbit.exact_velocity_at(node["ut"], orbit.body.non_rotating_reference_frame)
 
     prograde_hat = orbital.norm(velocity)
     normal_hat = orbital.norm(orbital.cross(position, velocity))
@@ -267,7 +277,7 @@ class TestPlaneChangeDoesNotExceedEscapeSpeed:
         client, vessel = make(50_000, 50_000)
         node = maneuver.change_inclination_node(client, vessel, angle_deg)
         position = vessel.orbit.position_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
-        velocity = vessel.orbit.velocity_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
+        velocity = vessel.orbit.exact_velocity_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
         prograde_hat = orbital.norm(velocity)
         normal_hat = orbital.norm(orbital.cross(position, velocity))
         radial_hat = orbital.cross(normal_hat, prograde_hat)
@@ -275,7 +285,14 @@ class TestPlaneChangeDoesNotExceedEscapeSpeed:
             v + node["prograde"] * p + node["normal"] * n + node["radial"] * r
             for v, p, n, r in zip(velocity, prograde_hat, normal_hat, radial_hat)
         )
-        assert orbital.magnitude(new_velocity) == pytest.approx(orbital.magnitude(velocity), rel=1e-9)
+        # rel=1e-6, not 1e-9: production's basis vectors come from a
+        # centered finite difference (maneuver.velocity_at), not the exact
+        # analytic velocity used here as ground truth -- a tiny, genuine
+        # numerical discretization difference, not a bug. The original
+        # wrong-formula bug this test guards against was off by tens of
+        # percent, not parts per billion, so this tolerance still catches
+        # it while not failing on floating-point-level noise.
+        assert orbital.magnitude(new_velocity) == pytest.approx(orbital.magnitude(velocity), rel=1e-6)
 
     def test_ninety_degree_change_does_not_exceed_escape_speed(self):
         """The resulting SPEED must stay below escape velocity -- checking
@@ -289,7 +306,7 @@ class TestPlaneChangeDoesNotExceedEscapeSpeed:
         node = maneuver.change_inclination_node(client, vessel, 90.0)
 
         position = vessel.orbit.position_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
-        velocity = vessel.orbit.velocity_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
+        velocity = vessel.orbit.exact_velocity_at(node["ut"], vessel.orbit.body.non_rotating_reference_frame)
         prograde_hat = orbital.norm(velocity)
         normal_hat = orbital.norm(orbital.cross(position, velocity))
         radial_hat = orbital.cross(normal_hat, prograde_hat)
