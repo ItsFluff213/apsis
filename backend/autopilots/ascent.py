@@ -52,6 +52,12 @@ MAX_AOA_DEG = 5.0
 PITCH_KICK_SPEED_MS = 60.0
 PITCH_KICK_DEG = 3.0
 
+# Horizontal speed at which "follow prograde" takes over from "hold the
+# kick angle". Below this, the velocity vector is still dominated by the
+# vertical climb and reading its angle as "prograde" is really just
+# reading noise around 90 degrees -- not a real turn to follow.
+KICK_ESTABLISHED_MS = 5.0
+
 G0 = 9.80665
 
 
@@ -120,18 +126,42 @@ def _gravity_turn_pitch(flight, kicked, altitude, turn_start_altitude_m, turn_en
     is the craft's actual flight path angle (i.e. prograde) -- that is the
     gravity turn. The schedule floor then ensures a sluggish craft cannot
     simply refuse to turn.
+
+    Confirmed live: PITCH_KICK_DEG never actually did anything, so the
+    rocket flew dead vertical for the entire ascent. At the instant `kicked`
+    goes true, the craft is still moving almost straight up -- vertical
+    speed just crossed PITCH_KICK_SPEED_MS, horizontal speed is ~0 -- so
+    prograde_pitch computes to essentially 90 degrees too. `max(90, floor)`
+    is then 90 no matter what the floor says, forever: thrust stays
+    vertical, so no horizontal velocity is ever produced, so prograde never
+    leaves vertical, so the command never leaves 90. A "gravity turn" that
+    never applies an actual kick has nothing to turn it.
+
+    The fix is the kick has to be a real deviation, not a value that
+    happens to equal prograde. Until the craft has built up a little real
+    horizontal speed, command PITCH_KICK_DEG off vertical directly -- that
+    is a genuine, if small, angle of attack, which is exactly what tips the
+    velocity vector off vertical in the first place. Once horizontal speed
+    is past KICK_ESTABLISHED_MS, the velocity vector has enough of its own
+    momentum that following it (the normal gravity-turn law below) takes
+    over and continues the turn on its own.
     """
     if not kicked:
         return 90.0
+
+    horizontal = flight.horizontal_speed
+    vertical = flight.vertical_speed
+
+    if horizontal < KICK_ESTABLISHED_MS:
+        # Still essentially straight up -- hold the deliberate kick angle
+        # rather than "following prograde", which is indistinguishable from
+        # vertical at this point and would command no turn at all.
+        return 90.0 - PITCH_KICK_DEG
 
     # flight.pitch is the *nose* attitude; the flight path angle is what
     # prograde actually is, derived from the velocity components. Using the
     # nose angle here would make the loop chase its own tail (command =
     # current attitude is a no-op that freezes the turn wherever it started).
-    horizontal = flight.horizontal_speed
-    vertical = flight.vertical_speed
-    if horizontal <= 0.1 and vertical <= 0.1:
-        return 90.0
     prograde_pitch = math.degrees(math.atan2(vertical, horizontal))
 
     floor_pitch = _schedule_pitch(altitude, turn_start_altitude_m, turn_end_altitude_m)
