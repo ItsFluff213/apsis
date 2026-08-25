@@ -11,7 +11,7 @@ import math
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.autopilots import ascent, booster_return, docking, landing, moon_transfer, planet_transfer
+from backend.autopilots import ascent, booster_return, circularize, docking, landing, moon_transfer, planet_transfer
 from backend.krpc_client import NotConnected
 
 router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
@@ -53,6 +53,10 @@ class DockingRequest(BaseModel):
     # craft are already close and you don't want the autopilot spending
     # time/fuel deciding whether a rendezvous is needed.
     skip_rendezvous: bool = False
+
+
+class CircularizeRequest(BaseModel):
+    target_altitude_m: float
 
 
 class ResourceTransferRequest(BaseModel):
@@ -132,6 +136,16 @@ def build_router(client, registry, jobs):
                 target_periapsis_m=body.target_periapsis_m,
                 target_inclination_deg=body.target_inclination_deg,
                 parking_altitude_m=body.parking_altitude_m,
+            ),
+            body.model_dump(),
+        )
+
+    @router.post("/{vessel_id}/circularize")
+    def start_circularize(vessel_id: str, body: CircularizeRequest):
+        return _start(
+            vessel_id, "circularize",
+            lambda job, vessel: circularize.run_circularize(
+                client, vessel, job, target_altitude_m=body.target_altitude_m,
             ),
             body.model_dump(),
         )

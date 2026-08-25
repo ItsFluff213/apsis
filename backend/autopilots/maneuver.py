@@ -7,6 +7,7 @@ uses too.
 
 import math
 
+from backend import orbital
 from backend.autopilots import staging
 
 
@@ -112,23 +113,45 @@ def change_apoapsis_node(client, vessel, target_apoapsis_m, burn_at="periapsis")
 
 
 def change_inclination_node(client, vessel, target_inclination_deg):
-    """Adds a node at the next ascending node (relative to the body's
-    equatorial plane -- the same reference Orbit.inclination already uses)
-    that changes the orbit's inclination to the target, leaving the orbit
-    shape (speed, radius) otherwise unchanged.
+    """Adds a node at the next ascending or descending node (whichever is
+    cheaper -- see below) that changes the orbit's inclination to the
+    target, leaving the orbit's shape (semi-major axis and eccentricity,
+    hence periapsis/apoapsis) unchanged.
 
-    The delta-v is split between prograde and normal components -- not
-    applied purely normal. A pure-normal burn of magnitude 2*v*sin(di/2)
-    only approximates a plane rotation for *small* di: for a large change
-    (confirmed live with a 90 degree change) it adds that much speed
-    entirely sideways on top of the existing forward speed, making the
-    resulting total speed *higher* than a correct plane change would --
-    for close to a 90 degree change this pushed the resulting speed past
-    local escape velocity, flinging a real test satellite out of Minmus's
-    SOI entirely instead of just re-tilting its orbit. Splitting the burn
-    into prograde*(cos(di)-1) and normal*sin(di) instead rotates the
-    velocity vector while preserving its magnitude exactly, for any angle,
-    which is what a plane-change-only maneuver actually requires.
+    Built from the actual position and velocity vectors at the burn time,
+    not from the scalar vis-viva speed at that radius. That distinction
+    matters, and got this function wrong for a real flight before it was
+    caught: at any point that isn't a periapsis or apoapsis, velocity has
+    both a tangential (prograde) component AND a radial one. An earlier
+    version computed only the scalar speed `v = vis_viva_speed(...)` and
+    split it into `prograde_dv = v*(cos(di)-1)` / `normal_dv = v*sin(di)`,
+    which implicitly assumes the ENTIRE velocity is prograde at the burn
+    point -- true only exactly at an apsis, or anywhere on a circular
+    orbit. That assumption was harmless everywhere this function had been
+    called before (fresh, near-circular parking orbits), but this project
+    also now calls it deliberately off-apsis, on a still-eccentric orbit,
+    to rotate the plane before circularizing (cheaper that way -- see
+    below). Confirmed live: on a real Mun arrival, that combination
+    silently corrupted the orbit's shape while still rotating the plane
+    correctly, leaving a vessel in a 320km-ish orbit instead of the
+    requested 100km, with the *right* inclination and the *wrong*
+    everything else -- a hard bug to notice by watching, since the ship
+    was clearly headed into a clean-looking circular orbit right up until
+    the final numbers didn't match, and it took a look at eccentricity
+    (accidentally almost 0 -- misleadingly "clean") and periapsis together
+    to see the plane change was where the meters had gone.
+
+    The fix: read the vessel's actual velocity and position at the burn
+    time, and rotate the FULL velocity vector by delta_inclination about
+    the axis defined by the position vector. At a true node, the position
+    vector lies exactly along the line of nodes -- the intersection of the
+    old and new orbital planes -- so rotating velocity about that axis by
+    the desired angle changes the plane by exactly that angle while
+    leaving both the vector's magnitude (so: energy, so: semi-major axis)
+    and the magnitude of position-cross-velocity (so: angular momentum, so:
+    eccentricity) untouched, for any point on the orbit, not just apsides.
+    This is the general, always-correct version of what the old formula
+    only approximated at an apsis.
 
     A plane change is priced by how fast you are travelling when you make
     it -- the cost scales directly with orbital speed -- so on an
@@ -155,17 +178,32 @@ def change_inclination_node(client, vessel, target_inclination_deg):
     for true_anomaly in (ta_ascending, ta_descending):
         radius = orbit.radius_at_true_anomaly(true_anomaly)
         candidates.append((radius, true_anomaly))
-    radius, true_anomaly = max(candidates)
+    _, true_anomaly = max(candidates)
 
     ut = orbit.ut_at_true_anomaly(true_anomaly)
     if ut < sc.ut:
         ut += orbit.period
 
-    v = vis_viva_speed(orbit.body.gravitational_parameter, radius, orbit.semi_major_axis)
-    prograde_dv = v * (math.cos(delta_inclination) - 1)
-    normal_dv = v * math.sin(delta_inclination)
+    frame = orbit.body.non_rotating_reference_frame
+    position = orbit.position_at(ut, frame)
+    velocity = orbit.velocity_at(ut, frame)
+    rotated_velocity = orbital.rotate_about_axis(velocity, position, delta_inclination)
+    delta_v_vector = tuple(r - v for r, v in zip(rotated_velocity, velocity))
 
-    return vessel.control.add_node(ut, prograde=prograde_dv, normal=normal_dv)
+    # add_node's prograde/normal/radial axes are defined at the node's own
+    # UT, not "now" -- built from the same position/velocity already read
+    # above so they line up with the burn point exactly, not the vessel's
+    # current (different) position.
+    prograde_hat = orbital.norm(velocity)
+    normal_hat = orbital.norm(orbital.cross(position, velocity))
+    # In-plane, perpendicular to prograde -- kRPC's node "radial" axis.
+    radial_hat = orbital.norm(orbital.cross(normal_hat, prograde_hat))
+
+    prograde_dv = orbital.dot(delta_v_vector, prograde_hat)
+    normal_dv = orbital.dot(delta_v_vector, normal_hat)
+    radial_dv = orbital.dot(delta_v_vector, radial_hat)
+
+    return vessel.control.add_node(ut, prograde=prograde_dv, normal=normal_dv, radial=radial_dv)
 
 
 def phasing_node(client, vessel, angle_to_close_deg, num_orbits=1, burn_at="apoapsis"):

@@ -87,6 +87,9 @@ export const startLanding = (id, lat, lon) =>
 
 export const startBoosterReturn = (id) => request(autopilot(id, "/booster-return"), { method: "POST" });
 
+export const startCircularize = (id, targetAltitudeM) =>
+  request(autopilot(id, "/circularize"), { method: "POST", body: { target_altitude_m: targetAltitudeM } });
+
 export const startDocking = (id, targetVesselId, ownPortTag = null, targetPortTag = null, skipRendezvous = false) =>
   request(autopilot(id, "/dock"), {
     method: "POST",
