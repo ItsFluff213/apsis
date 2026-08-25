@@ -202,6 +202,7 @@ def _delta_v_capacity(vessel):
 
 
 def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, target_inclination_deg=0.0,
+               target_lan_deg=None, target_argp_deg=None,
                turn_start_altitude_m=1000, turn_end_altitude_m=45000):
     """The pitch kick fires purely on PITCH_KICK_SPEED_MS -- speed, not
     altitude, is what determines whether the craft has aerodynamic and
@@ -257,11 +258,22 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     # update instead of snapping straight at it and overshooting.
     ap.target_smoothing_time = 0.5
 
+    body = vessel.orbit.body
+    # target_pitch_and_heading() interprets pitch/heading against
+    # ap.reference_frame's own fixed axes -- body.reference_frame's "up"
+    # is the body's north pole, not local vertical at the vessel, so pitch
+    # 90 there points at the pole, not up (confirmed live: dot product of
+    # the resulting direction with actual local-up was 0.27, not 1.0,
+    # which pitched the rocket hard off-vertical and crashed it).
+    # vessel.surface_reference_frame's axes are defined at the vessel's own
+    # position (y = local zenith, x = local north), which is what
+    # target_pitch_and_heading actually needs.
+    ap.reference_frame = vessel.surface_reference_frame
+
     ap.engaged = True
     ap.target_pitch_and_heading(90, 90)
     job.message = "launching"
 
-    body = vessel.orbit.body
     flight = vessel.flight(body.reference_frame)
     atmosphere_depth = body.atmosphere_depth
     target_heading = 90 - target_inclination_deg
@@ -338,6 +350,55 @@ def run_ascent(client, vessel, job, target_apoapsis_m, target_periapsis_m, targe
     job.message = "planning circularization burn"
     node = maneuver.change_periapsis_node(client, vessel, target_periapsis_m, burn_at="apoapsis")
     maneuver.execute_node(client, vessel, job, node)
+
+    # The burn above is timed as an instantaneous impulse at apoapsis, which
+    # is a bad approximation for a large burn on a low-TWR craft -- confirmed
+    # live: a periapsis-raise burn requiring mid-burn staging took long
+    # enough that it ran mostly *after* apoapsis instead of straddling it,
+    # leaving periapsis basically untouched while apoapsis nearly tripled.
+    # "orbit achieved" must mean the orbit is actually safe, not just that
+    # the burn loop finished -- verify the real result and trim it.
+    ok = maneuver.verify_and_trim_apsides(
+        client, vessel, job,
+        target_periapsis_m=target_periapsis_m, target_apoapsis_m=target_apoapsis_m,
+    )
+    if not ok:
+        raise RuntimeError(
+            f"circularization burn did not converge: periapsis="
+            f"{vessel.orbit.periapsis_altitude / 1000:.1f} km, apoapsis="
+            f"{vessel.orbit.apoapsis_altitude / 1000:.1f} km (target {target_periapsis_m / 1000:.0f}"
+            f"/{target_apoapsis_m / 1000:.0f} km)"
+        )
+
+    # Heading control during the climb only holds the requested inclination
+    # if attitude control actually held for the whole burn -- confirmed
+    # live: a manual SAS toggle mid-ascent left the rocket thrusting with no
+    # attitude control for a stretch, and it came out at 57 degrees against
+    # a targeted 90. That's not something the ascent loop above can detect
+    # on its own (it just keeps commanding pitch/heading; it has no idea the
+    # commands stopped reaching the vessel) -- checking the actual resulting
+    # inclination here and correcting it is what catches it.
+    if not maneuver.verify_and_trim_inclination(
+        client, vessel, job, target_inclination_deg, target_lan_deg=target_lan_deg,
+    ):
+        raise RuntimeError(
+            f"couldn't correct inclination/plane to {target_inclination_deg:.1f} deg"
+            f"{f', LAN {target_lan_deg:.1f} deg' if target_lan_deg is not None else ''} -- "
+            f"still at {math.degrees(vessel.orbit.inclination):.1f} deg, "
+            f"LAN {math.degrees(vessel.orbit.longitude_of_ascending_node) % 360:.1f} deg"
+        )
+
+    # Argument of periapsis only means anything on a real ellipse -- on a
+    # circular target (the common case) kRPC's own reported value is
+    # dominated by numerical noise, and "correcting" it would be both
+    # meaningless and a wasted burn. Only bother when a genuinely distinct
+    # periapsis was actually requested.
+    if target_argp_deg is not None and target_periapsis_m < target_apoapsis_m * 0.999:
+        if not maneuver.verify_and_trim_argument_of_periapsis(client, vessel, job, target_argp_deg):
+            raise RuntimeError(
+                f"couldn't correct argument of periapsis to {target_argp_deg:.1f} deg -- "
+                f"still at {math.degrees(vessel.orbit.argument_of_periapsis) % 360:.1f} deg"
+            )
 
     control.sas = True
 

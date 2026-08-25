@@ -61,11 +61,20 @@ function buildOrbitControls(host, vessel) {
   host.innerHTML = `
     <div class="control-group">
       <span class="group-label">Launch</span>
-      <input class="ap-alt" type="number" placeholder="altitude km" value="90" />
+      <input class="ap-alt" type="number" placeholder="apoapsis km" value="90" />
+      <input class="ap-peri" type="number" placeholder="periapsis km (blank = circular)" />
       <input class="ap-incl" type="number" placeholder="incl deg" value="0" />
       <button class="ap-polar" title="Set inclination to 90 degrees">Polar</button>
+      <input class="ap-lan" type="number" placeholder="LAN deg (blank = skip)" title="Longitude of ascending node" />
+      <input class="ap-argp" type="number" placeholder="argp deg (blank = skip)" title="Argument of periapsis -- only matters with a distinct periapsis above" />
       <button class="ap-start primary">Launch to orbit</button>
     </div>
+    <p class="hint">
+      LAN and argument of periapsis are corrected with an extra burn after reaching orbit, not aimed for
+      during the climb -- leave either blank to skip it. A LAN correction can be an expensive plane change
+      if it's far from where the ascent naturally lands; argument of periapsis only means anything with a
+      periapsis set above (a circular orbit has no well-defined periapsis direction).
+    </p>
     <div class="control-group">
       <span class="group-label">Transfer to</span>
       <select class="tr-target"></select>
@@ -132,11 +141,42 @@ function buildOrbitControls(host, vessel) {
   el(".ap-start").addEventListener("click", async () => {
     const altitudeM = Number(el(".ap-alt").value) * 1000;
     if (!Number.isFinite(altitudeM) || altitudeM <= 0) {
-      status("enter a target altitude in km", "error");
+      status("enter a target apoapsis in km", "error");
+      return;
+    }
+    // Blank periapsis means "circular" -- match apoapsis, same as before
+    // this field existed. A filled-in value is passed through as-is (an
+    // elliptical target); ascent.py already accepted a distinct periapsis,
+    // the dashboard just never exposed it.
+    const periRaw = el(".ap-peri").value.trim();
+    let periapsisM = altitudeM;
+    if (periRaw !== "") {
+      periapsisM = Number(periRaw) * 1000;
+      if (!Number.isFinite(periapsisM) || periapsisM <= 0) {
+        status("periapsis must be a positive number, or blank for circular", "error");
+        return;
+      }
+      if (periapsisM > altitudeM) {
+        status("periapsis can't be higher than apoapsis", "error");
+        return;
+      }
+    }
+    // Blank LAN/argp means "don't bother correcting it" -- both are passed
+    // through as null in that case, which ascent.py treats as skip.
+    const lanRaw = el(".ap-lan").value.trim();
+    const lanDeg = lanRaw === "" ? null : Number(lanRaw);
+    if (lanDeg !== null && !Number.isFinite(lanDeg)) {
+      status("LAN must be a number, or blank to skip", "error");
+      return;
+    }
+    const argpRaw = el(".ap-argp").value.trim();
+    const argpDeg = argpRaw === "" ? null : Number(argpRaw);
+    if (argpDeg !== null && !Number.isFinite(argpDeg)) {
+      status("argument of periapsis must be a number, or blank to skip", "error");
       return;
     }
     try {
-      await api.startAscent(vessel.id, altitudeM, altitudeM, Number(el(".ap-incl").value) || 0);
+      await api.startAscent(vessel.id, altitudeM, periapsisM, Number(el(".ap-incl").value) || 0, lanDeg, argpDeg);
     } catch (e) {
       status(`launch rejected: ${e.message}`, "error");
     }

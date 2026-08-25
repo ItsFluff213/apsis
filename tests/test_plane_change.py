@@ -222,6 +222,38 @@ class TestPlaneChangePreservesOrbitShape:
         assert new_e == pytest.approx(0.0, abs=1e-6)
         assert new_incl == pytest.approx(90.0, abs=1e-6)
 
+    def test_reaches_target_from_nonzero_starting_inclination_at_either_node(self):
+        """The actual bug, reproduced: every other test in this file starts
+        from inclination_deg=0 (make()'s default), which is a degenerate
+        case where ascending/descending is meaningless and the burn is
+        correct regardless of which node gets picked. That's exactly why
+        this shipped broken -- none of them exercised a nonzero *starting*
+        inclination together with a descending-node burn.
+
+        Confirmed live: an ascent that ended up at 37 degrees, corrected
+        toward a 90 degree target, moved the *wrong* direction (down to 35)
+        while also wrecking the orbit's shape (eccentricity 0.004 -> 0.033).
+        The cause was rotating about the raw position vector at the burn
+        point, which only agrees with the intended sign at the ascending
+        node -- at the descending node it points the opposite way and
+        silently inverts the result.
+
+        argp=0 puts the ascending node at periapsis and the descending node
+        at apoapsis, so "whichever is farther out" always picks descending
+        here -- this exercises exactly the path the bug was in, starting
+        from a real nonzero inclination instead of the degenerate i=0 case.
+        """
+        client, vessel = make(periapsis_alt=80_000, apoapsis_alt=1_200_000, argp=0.0, inclination_deg=37.0)
+        original_a = vessel.orbit.semi_major_axis
+        original_e = vessel.orbit.eccentricity
+
+        node = maneuver.change_inclination_node(client, vessel, 90.0)
+        new_a, new_e, new_incl = orbit_after_burn(vessel, node)
+
+        assert new_incl == pytest.approx(90.0, abs=1e-4)
+        assert new_a == pytest.approx(original_a, rel=1e-5)
+        assert new_e == pytest.approx(original_e, abs=1e-5)
+
 
 class TestPlaneChangeCost:
     def test_polar_change_on_circular_50km_orbit_is_expensive(self):

@@ -40,18 +40,21 @@ export const renameVessel = (id, name) =>
 export const setVesselRole = (id, category, detail = "") =>
   request(`/api/vessels/${encodeURIComponent(id)}/role`, { method: "POST", body: { category, detail } });
 export const listParts = (id) => request(`/api/vessels/${encodeURIComponent(id)}/parts`);
+export const listDockingPorts = (id) => request(`/api/vessels/${encodeURIComponent(id)}/docking-ports`);
 
 // --- Autopilot -----------------------------------------------------------
 
 const autopilot = (id, suffix) => `/api/autopilot/${encodeURIComponent(id)}${suffix}`;
 
-export const startAscent = (id, targetApoapsisM, targetPeriapsisM, inclinationDeg) =>
+export const startAscent = (id, targetApoapsisM, targetPeriapsisM, inclinationDeg, lanDeg = null, argpDeg = null) =>
   request(autopilot(id, "/ascent"), {
     method: "POST",
     body: {
       target_apoapsis_m: targetApoapsisM,
       target_periapsis_m: targetPeriapsisM,
       target_inclination_deg: inclinationDeg,
+      target_lan_deg: lanDeg,
+      target_argp_deg: argpDeg,
     },
   });
 
@@ -89,6 +92,9 @@ export const startBoosterReturn = (id) => request(autopilot(id, "/booster-return
 
 export const startCircularize = (id, targetAltitudeM) =>
   request(autopilot(id, "/circularize"), { method: "POST", body: { target_altitude_m: targetAltitudeM } });
+
+export const startPlaneChange = (id, targetInclinationDeg) =>
+  request(autopilot(id, "/plane-change"), { method: "POST", body: { target_inclination_deg: targetInclinationDeg } });
 
 export const startDocking = (id, targetVesselId, ownPortTag = null, targetPortTag = null, skipRendezvous = false) =>
   request(autopilot(id, "/dock"), {

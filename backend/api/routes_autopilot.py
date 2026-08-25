@@ -11,7 +11,9 @@ import math
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from backend.autopilots import ascent, booster_return, circularize, docking, landing, moon_transfer, planet_transfer
+from backend.autopilots import (
+    ascent, booster_return, circularize, docking, landing, moon_transfer, plane_change, planet_transfer,
+)
 from backend.krpc_client import NotConnected
 
 router = APIRouter(prefix="/api/autopilot", tags=["autopilot"])
@@ -21,6 +23,15 @@ class AscentRequest(BaseModel):
     target_apoapsis_m: float
     target_periapsis_m: float
     target_inclination_deg: float = 0.0
+    # Both optional and independent of each other: LAN only means something
+    # once inclination is nonzero (it's the orbit's tilt-plane heading), and
+    # argument of periapsis only means something on a genuine ellipse
+    # (target_periapsis_m distinct from target_apoapsis_m) -- ascent.py
+    # skips the argp correction on a circular target regardless of what's
+    # passed here, since "correcting" a near-circular orbit's argp chases
+    # numerical noise for no reason.
+    target_lan_deg: float | None = None
+    target_argp_deg: float | None = None
 
 
 class LandingRequest(BaseModel):
@@ -59,6 +70,10 @@ class CircularizeRequest(BaseModel):
     target_altitude_m: float
 
 
+class PlaneChangeRequest(BaseModel):
+    target_inclination_deg: float
+
+
 class ResourceTransferRequest(BaseModel):
     resource_name: str
     amount: float | None = None  # None means "as much as will move"
@@ -91,6 +106,8 @@ def build_router(client, registry, jobs):
                 target_apoapsis_m=body.target_apoapsis_m,
                 target_periapsis_m=body.target_periapsis_m,
                 target_inclination_deg=body.target_inclination_deg,
+                target_lan_deg=body.target_lan_deg,
+                target_argp_deg=body.target_argp_deg,
             ),
             body.model_dump(),
         )
@@ -146,6 +163,16 @@ def build_router(client, registry, jobs):
             vessel_id, "circularize",
             lambda job, vessel: circularize.run_circularize(
                 client, vessel, job, target_altitude_m=body.target_altitude_m,
+            ),
+            body.model_dump(),
+        )
+
+    @router.post("/{vessel_id}/plane-change")
+    def start_plane_change(vessel_id: str, body: PlaneChangeRequest):
+        return _start(
+            vessel_id, "plane-change",
+            lambda job, vessel: plane_change.run_plane_change(
+                client, vessel, job, target_inclination_deg=body.target_inclination_deg,
             ),
             body.model_dump(),
         )

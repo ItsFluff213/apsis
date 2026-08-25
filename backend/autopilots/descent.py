@@ -167,7 +167,7 @@ def hold_retrograde_through_reentry(client, vessel, job, body):
             break  # skipped back out of the atmosphere
         if flight.speed <= CHUTE_SAFE_SPEED_MS:
             break  # through the worst of it
-        if flight.surface_altitude < 1000:
+        if flight.bedrock_altitude < 1000:
             break  # out of time -- let the landing guidance have it
         ap.target_direction = flight.retrograde
         job.sleep(0.2)
@@ -197,7 +197,11 @@ def _ride_chutes_down(client, vessel, job, body, retro_assist_speed=CHUTE_TERMIN
             flight = _flight(vessel)
             descent_rate = -flight.vertical_speed
 
-            if flight.surface_altitude <= 0.5 and abs(flight.vertical_speed) < 0.5:
+            # bedrock_altitude for the touchdown check too: over land this is
+            # the same as being on the ground, and a splashdown is still
+            # caught by the situation check right below regardless of how
+            # deep the actual seabed is under the water.
+            if flight.bedrock_altitude <= 0.5 and abs(flight.vertical_speed) < 0.5:
                 break
             if vessel.situation.name in ("landed", "splashed"):
                 break
@@ -211,7 +215,7 @@ def _ride_chutes_down(client, vessel, job, body, retro_assist_speed=CHUTE_TERMIN
 
             # Retro-assist only in the last stretch, and only if actually
             # needed -- burning higher up just fights the canopy.
-            if (flight.surface_altitude < 200 and descent_rate > retro_assist_speed
+            if (flight.bedrock_altitude < 200 and descent_rate > retro_assist_speed
                     and vessel.available_thrust > 0.1):
                 job.message = "parachute descent -- retro-assist for touchdown"
                 control.throttle = min(1.0, (descent_rate - retro_assist_speed) / 10.0)
@@ -300,7 +304,15 @@ def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, 
         while True:
             job.check_abort()
             flight = _flight(vessel)
-            altitude = flight.surface_altitude
+            # bedrock_altitude, not surface_altitude: the latter is defined
+            # as height above the surface *or sea level, whichever is
+            # closer* -- so anywhere the terrain dips below the sea-level
+            # datum (not just open ocean; canyons, crater floors, coastal
+            # shallows all count) it silently switches from terrain-relative
+            # to water-relative mid-descent, handing this throttle
+            # calculation a discontinuous jump in its input. bedrock_altitude
+            # is always true distance to solid ground, continuous throughout.
+            altitude = flight.bedrock_altitude
             vertical_speed = -flight.vertical_speed  # positive = descending
 
             # Chutes, if the craft has them and the air is thick enough for
@@ -332,7 +344,7 @@ def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, 
         while True:
             job.check_abort()
             flight = _flight(vessel)
-            altitude = flight.surface_altitude
+            altitude = flight.bedrock_altitude  # see the coast-phase comment above
             if altitude <= final_hover_altitude:
                 break
 
@@ -352,9 +364,14 @@ def suicide_burn_landing(client, vessel, job, target_lat=None, target_lon=None, 
             job.check_abort()
             flight = _flight(vessel)
             ap.target_pitch_and_heading(90, heading_toward_target(flight))
-            if flight.surface_altitude <= 0.3 and abs(flight.vertical_speed) < 0.3:
+            # bedrock_altitude never reads ~0 on water (it's distance to the
+            # seabed), so the situation check is what actually catches a
+            # splashdown -- the altitude+speed check is what catches
+            # touchdown on land.
+            if (flight.bedrock_altitude <= 0.3 and abs(flight.vertical_speed) < 0.3) \
+                    or vessel.situation.name in ("landed", "splashed"):
                 break
-            target_descent_rate = -max(min(flight.surface_altitude / 5.0, 3.0), 0.5)
+            target_descent_rate = -max(min(flight.bedrock_altitude / 5.0, 3.0), 0.5)
             error = target_descent_rate - flight.vertical_speed
             control.throttle = min(max(0.5 + error * 0.15, 0.0), 1.0)
             job.sleep(0.05)
