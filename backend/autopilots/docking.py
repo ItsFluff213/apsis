@@ -434,12 +434,12 @@ def run_docking(client, registry, vessel, job, target_vessel_id, own_port_tag=No
         sc.physics_warp_factor = 0
         job.sleep(1.0)
 
+    # Only our own port is picked here -- `vessel` was just made the active
+    # vessel above, and the active vessel is always fully loaded, so this
+    # is always safe to check immediately.
     own_port = _pick_port(vessel, own_port_tag)
     if own_port is None:
         raise ValueError(f"{vessel.name} has no free docking port -- tag one as dock.front if it does")
-    target_port = _pick_port(target, target_port_tag)
-    if target_port is None:
-        raise ValueError(f"{target.name} has no free docking port")
 
     sc.target_vessel = target
 
@@ -456,6 +456,29 @@ def run_docking(client, registry, vessel, job, target_vessel_id, own_port_tag=No
                 f"couldn't close on {target.name} -- the orbits are probably too dissimilar "
                 f"for this to fix from here (see the plane-matching limits in docking.py)"
             )
+
+    # The target's port is picked HERE, not before phase 1, and deliberately
+    # not any earlier. kRPC returns an empty part list -- not an error, not
+    # a warning, just zero parts -- for any vessel outside physics loading
+    # range, which looks structurally identical to "this craft genuinely
+    # has no docking port." Confirmed live: picking the target's port before
+    # rendezvous misdiagnosed a real, ported station as portless, because it
+    # was still hundreds of km away and kRPC couldn't see any of its parts
+    # yet. By this point in the sequence the craft should be within
+    # APPROACH_HANDOVER_M (or the caller asserted skip_rendezvous, meaning
+    # they're claiming to already be close), so the target should actually
+    # be loaded -- but check for the unloaded case explicitly anyway rather
+    # than let it silently reappear as the same misleading "no free
+    # docking port" message under different circumstances.
+    if len(target.parts.all) == 0:
+        raise ValueError(
+            f"{target.name} isn't loaded into physics range, so its parts can't be inspected yet -- "
+            f"get within a few km of it (or don't pass skip_rendezvous if you're not actually close) "
+            f"before docking can pick a port on it"
+        )
+    target_port = _pick_port(target, target_port_tag)
+    if target_port is None:
+        raise ValueError(f"{target.name} has no free docking port")
 
     # --- Phase 2: RCS approach ---
     sc.target_docking_port = target_port
