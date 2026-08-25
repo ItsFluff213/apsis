@@ -72,7 +72,15 @@ const DEFAULT_BODY_COLOR = 0x9aa4bf;
 // read as bigger than Moho at a glance.
 const ANGULAR_SIZE = 0.014; // world units of radius per unit of camera distance
 const MIN_WORLD_SIZE = 0.6; // stops objects vanishing when the camera is right on top
-const MAX_WORLD_SIZE = 14; // stops a close-up planet swallowing the whole view
+// Fallback only -- vessels use this flat cap (they don't have "neighbouring
+// orbits" to collide with in the way bodies do). Celestial bodies use a
+// per-body cap instead; see computeClearances().
+const MAX_WORLD_SIZE = 14;
+
+// What fraction of the distance to the nearest neighbour a body is allowed
+// to grow into. 0.4 leaves it visibly smaller than the gap even at max
+// zoom, rather than touching or crossing into it.
+const CLEARANCE_SAFETY_FRACTION = 0.4;
 
 const GAS_GIANTS = new Set(["Jool"]);
 const BASE_SIZES = { sun: 2.6, gasGiant: 1.7, planet: 1.0, moon: 0.62, vessel: 0.42 };
@@ -84,21 +92,89 @@ function baseSizeForBody(name, isMoon) {
 }
 
 /**
+ * How far each body can safely grow before it visually reaches a
+ * neighbour, derived from the ACTUAL current layout rather than a single
+ * global constant.
+ *
+ * The previous version capped every body at the same MAX_WORLD_SIZE
+ * (times a per-category weight). That looked fine in isolation but never
+ * checked itself against how close together things actually are: at max
+ * zoom the Sun could render to 36.4 world units while Moho's entire real
+ * orbit sits at 31 -- the Sun could swallow Moho's whole orbit. Jool
+ * could render to 23.8 units while its closest moon Laythe orbits at a
+ * schematic 13 -- Jool could swallow Laythe's orbit too. Both are exactly
+ * "spacing looks wrong when you zoom in on a planet" -- confirmed by
+ * computing the actual numbers, not just eyeballing it.
+ *
+ * A body's safe size is bounded by two things, whichever is tighter:
+ *   - the distance to its nearest SIBLING (another body orbiting the same
+ *     parent -- planet-to-planet spacing via the Sun, or moon-to-moon
+ *     spacing around one planet), and
+ *   - the distance out to its nearest CHILD's orbit, if it has any (a
+ *     planet can never be allowed to grow past its own innermost moon).
+ *
+ * Computed directly from `positions` (the live layout map already handed
+ * to setBodies) rather than the static SYSTEM_TREE, so it stays accurate
+ * whether a body is still on its schematic placeholder radius or has
+ * already loaded real orbital data, and self-updates as real data arrives.
+ */
+function computeClearances(positions) {
+  const clearances = new Map();
+  const entries = [...positions.entries()];
+
+  for (const [name, pos] of entries) {
+    if (name === "Sun") continue;
+    let nearest = Infinity;
+
+    for (const [otherName, otherPos] of entries) {
+      if (otherName === name) continue;
+      // Sibling: shares this body's parent (same origin point).
+      if (otherPos.originX === pos.originX && otherPos.originY === pos.originY) {
+        nearest = Math.min(nearest, Math.hypot(pos.x - otherPos.x, pos.y - otherPos.y));
+      }
+      // Child: this body IS otherPos's parent, so otherPos's own orbit
+      // radius (its distance from its origin, which is `pos`) is exactly
+      // how far the nearest child orbits from here.
+      if (otherPos.originX === pos.x && otherPos.originY === pos.y) {
+        nearest = Math.min(nearest, Math.hypot(otherPos.x - pos.x, otherPos.y - pos.y));
+      }
+    }
+
+    if (Number.isFinite(nearest)) clearances.set(name, nearest);
+  }
+
+  // The Sun's own limit: distance to its nearest direct child (innermost
+  // planet), the same "don't swallow your nearest child's orbit" rule
+  // applied one level up.
+  let sunClearance = Infinity;
+  for (const [name, pos] of entries) {
+    if (name === "Sun") continue;
+    if (pos.originX === 0 && pos.originY === 0) {
+      sunClearance = Math.min(sunClearance, Math.hypot(pos.x, pos.y));
+    }
+  }
+  if (Number.isFinite(sunClearance)) clearances.set("Sun", sunClearance);
+
+  return clearances;
+}
+
+/**
  * Resize one object so it subtends about the same angle regardless of how
  * far away the camera is. `extra` is a multiplier for transient emphasis,
- * e.g. highlighting the active vessel.
+ * e.g. highlighting the active vessel. `maxSize` overrides the flat
+ * MAX_WORLD_SIZE fallback -- bodies pass their own clearance-derived limit.
  */
-function applyScreenSize(mesh, baseSize, extra = 1) {
+function applyScreenSize(mesh, baseSize, extra = 1, maxSize = MAX_WORLD_SIZE) {
   const distance = camera.position.distanceTo(mesh.position);
-  const size = Math.min(MAX_WORLD_SIZE, Math.max(MIN_WORLD_SIZE, distance * ANGULAR_SIZE));
+  const size = Math.min(maxSize, Math.max(MIN_WORLD_SIZE, distance * ANGULAR_SIZE));
   mesh.scale.setScalar(size * baseSize * extra);
 }
 
 /** Rescale everything in the scene. Called once per frame from animate(). */
 function updateObjectScales() {
-  if (sunMesh) applyScreenSize(sunMesh, BASE_SIZES.sun);
+  if (sunMesh) applyScreenSize(sunMesh, BASE_SIZES.sun, 1, sunMaxSize);
   for (const entry of bodyMeshes.values()) {
-    applyScreenSize(entry.mesh, entry.baseSize);
+    applyScreenSize(entry.mesh, entry.baseSize, 1, entry.maxSize);
   }
   for (const entry of vesselIcons.values()) {
     applyScreenSize(entry.mesh, BASE_SIZES.vessel, entry.activeBoost || 1);
@@ -112,6 +188,10 @@ let scene, camera, renderer, controls, container;
 let ready = false;
 let resizeObserver = null;
 let sunMesh;
+// Clearance-derived size cap for the Sun, recomputed each time setBodies()
+// gets fresh layout data (see computeClearances). Starts at the flat
+// fallback until the first real layout arrives.
+let sunMaxSize = MAX_WORLD_SIZE;
 const bodyMeshes = new Map(); // name -> {mesh, ring}
 const vesselIcons = new Map(); // vessel id -> {mesh}
 let hoverTargets = []; // [{mesh, vessel}]
@@ -346,6 +426,11 @@ function ellipseRingPoints(smaScaled, eccentricity, argpDeg, inclinationDeg = 0)
 function setBodies(positions) {
   if (!ready) return;
 
+  const clearances = computeClearances(positions);
+  sunMaxSize = clearances.has("Sun")
+    ? Math.min(MAX_WORLD_SIZE, (clearances.get("Sun") * CLEARANCE_SAFETY_FRACTION) / BASE_SIZES.sun)
+    : MAX_WORLD_SIZE;
+
   for (const [name, pos] of positions) {
     if (name === "Sun") continue;
     let entry = bodyMeshes.get(name);
@@ -366,6 +451,15 @@ function setBodies(positions) {
       entry = { mesh, ring, ringKind: null, baseSize: baseSizeForBody(name, pos.isMoon) };
       bodyMeshes.set(name, entry);
     }
+    // maxSize is in the same units applyScreenSize works in BEFORE the
+    // baseSize multiply, so the clearance (a real world-space distance)
+    // has to be divided back down by this body's own baseSize here --
+    // otherwise a gas giant's 1.7x weight would silently let it grow 1.7x
+    // past the safe clearance it was just computed against.
+    const clearance = clearances.get(name);
+    entry.maxSize = clearance !== undefined
+      ? Math.min(MAX_WORLD_SIZE, (clearance * CLEARANCE_SAFETY_FRACTION) / entry.baseSize)
+      : MAX_WORLD_SIZE;
     entry.mesh.position.set(pos.x, pos.yOffset || 0, pos.y);
 
     if (pos.orbitShape) {
