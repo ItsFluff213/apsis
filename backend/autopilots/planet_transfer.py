@@ -48,6 +48,21 @@ CORRECTION_THRESHOLD_SOI_FRACTION = 0.25
 
 WARP_CHUNK_S = 3600 * 24  # up to a game-day per warp_to call, so abort stays responsive
 
+# A parking orbit this eccentric is circularized before departure. The
+# ejection math treats the burn point as the periapsis of a circular orbit
+# (see compute_transfer_plan), which stops being true on an eccentric one.
+MAX_PARKING_ECCENTRICITY = 0.01
+
+# ...and one inclined more than this off the origin's equator is refused
+# outright. Everything here projects angles onto a single plane, exactly as
+# moon_transfer.py does, so a steeply inclined parking orbit makes the
+# ejection aim meaningless rather than merely imprecise.
+MAX_PARKING_INCLINATION_DEG = 20.0
+
+# How long to allow for actually leaving the origin's sphere of influence
+# after the ejection burn, before concluding the burn didn't work.
+ESCAPE_TIMEOUT_S = 3600 * 24 * 30
+
 
 def _planet_of(vessel):
     """The planet the vessel is currently around, and the star it orbits.
@@ -66,6 +81,119 @@ def _planet_of(vessel):
         return body, star  # body orbits the star directly: it is a planet
     # body orbits something that orbits the star -- so body is a moon.
     return star, star.orbit.body
+
+
+def escape_to_parent(client, vessel, job, moon):
+    """Leave a moon's sphere of influence so the craft ends up orbiting the
+    planet, which is where an interplanetary departure has to start from.
+
+    Confirmed live as a dead end before this existed: a craft in Mun orbit
+    could not transfer anywhere at all. Asking for a planet was refused
+    ("vessel is orbiting Mun, not Kerbin") and asking for another moon
+    searched Mun's own satellites and found none ("'Gilly' is not a
+    satellite of Mun").
+
+    Cost note, because it is not small: this raises apoapsis past the SOI
+    boundary and coasts out, leaving a highly eccentric planet orbit that
+    prepare_parking_orbit then circularizes -- and circularizing way out at
+    the moon's orbital radius is expensive. Departing directly from the
+    moon would be cheaper (the Oberth effect works in your favour down
+    there), but it needs three-body targeting this patched-conic model
+    does not do. Budget for it, or return to low planet orbit yourself
+    first.
+    """
+    parent = moon.orbit.body
+    job.message = f"escaping {moon.name}'s SOI to reach {parent.name} orbit"
+
+    # Aim comfortably beyond the SOI edge so the escape is unambiguous
+    # rather than a marginal grazing trajectory.
+    escape_apoapsis = moon.sphere_of_influence * 1.2 - moon.equatorial_radius
+    node = maneuver.change_apoapsis_node(client, vessel, escape_apoapsis, burn_at="periapsis")
+    maneuver.execute_node(client, vessel, job, node)
+
+    sc = client.space_center
+    deadline = sc.ut + ESCAPE_TIMEOUT_S
+    while vessel.orbit.body == moon:
+        job.check_abort()
+        remaining = vessel.orbit.time_to_soi_change
+        if remaining is None:
+            raise ValueError(
+                f"couldn't escape {moon.name}'s SOI -- the burn left the craft on a closed orbit. "
+                f"Check it has enough delta-v remaining."
+            )
+        if remaining > 60:
+            sc.warp_to(sc.ut + min(remaining - 30, WARP_CHUNK_S))
+        else:
+            job.sleep(1)
+        if sc.ut > deadline:
+            raise ValueError(f"timed out escaping {moon.name}'s SOI")
+
+    job.message = f"now in {parent.name} orbit"
+
+
+def prepare_parking_orbit(client, vessel, job, origin, parking_altitude_m=None):
+    """Get the craft into a parking orbit the ejection math is actually
+    valid for: near-circular, near-equatorial, at a known altitude.
+
+    This exists because the departure calculation assumes it. It treats the
+    burn point as the periapsis of a circular orbit and derives the burn
+    size from that radius, so an eccentric parking orbit produces both the
+    wrong burn location and the wrong delta-v -- the craft fires
+    confidently and goes nowhere near the target. Establishing the orbit
+    first, and only handling inclination at the destination, keeps each
+    step solving one problem.
+
+    Inclination is refused rather than corrected. Every angle here is
+    projected onto one plane, so a steeply inclined parking orbit doesn't
+    degrade the aim, it invalidates it -- and a plane change large enough
+    to fix that costs more than the transfer itself. Launching equatorial
+    is the right answer, and wanting a polar orbit at the *destination* is
+    a separate thing, handled on arrival.
+    """
+    inclination_deg = math.degrees(vessel.orbit.inclination)
+    if inclination_deg > MAX_PARKING_INCLINATION_DEG:
+        raise ValueError(
+            f"parking orbit inclination is {inclination_deg:.1f} degrees, which is too far from "
+            f"{origin.name}'s equator for the transfer math to aim correctly (limit "
+            f"{MAX_PARKING_INCLINATION_DEG:.0f}). Launch into a near-equatorial parking orbit instead. "
+            f"If you wanted a polar orbit around the destination, pass that as the target inclination "
+            f"-- it is applied on arrival, not here."
+        )
+
+    # Circularize if needed, at the requested altitude or wherever the
+    # craft already is (cheapest).
+    target_altitude = parking_altitude_m
+    if target_altitude is None:
+        target_altitude = vessel.orbit.periapsis_altitude
+
+    needs_altitude_change = (
+        parking_altitude_m is not None
+        and abs(vessel.orbit.apoapsis_altitude - parking_altitude_m) > max(parking_altitude_m * 0.02, 2000)
+    )
+    needs_circularizing = vessel.orbit.eccentricity > MAX_PARKING_ECCENTRICITY
+
+    if not needs_altitude_change and not needs_circularizing:
+        return
+
+    if needs_altitude_change:
+        job.message = f"raising parking orbit to {target_altitude / 1000:.0f} km before departure"
+        node = maneuver.change_apoapsis_node(client, vessel, target_altitude, burn_at="periapsis")
+        maneuver.execute_node(client, vessel, job, node)
+
+        job.message = "coasting to circularization point"
+        if vessel.orbit.time_to_apoapsis > 30:
+            client.space_center.warp_to(client.space_center.ut + vessel.orbit.time_to_apoapsis - 20)
+        while vessel.orbit.time_to_apoapsis > 5:
+            job.check_abort()
+            job.sleep(1)
+
+        job.message = "circularizing parking orbit"
+        node = maneuver.change_periapsis_node(client, vessel, target_altitude, burn_at="apoapsis")
+        maneuver.execute_node(client, vessel, job, node)
+    else:
+        job.message = "circularizing parking orbit before departure"
+        node = maneuver.circularize_node(client, vessel, at="apoapsis")
+        maneuver.execute_node(client, vessel, job, node)
 
 
 def compute_transfer_plan(client, vessel, origin, target):
@@ -285,12 +413,22 @@ def _mid_course_correction(client, vessel, job, star, target, plan):
 
 
 def run_planet_transfer(client, vessel, job, target_body_name, target_periapsis_m,
-                        target_inclination_deg=None):
-    """Fly the whole transfer: wait for the window, eject, coast, correct,
-    capture, circularize.
+                        target_inclination_deg=None, parking_altitude_m=None):
+    """Fly the whole transfer: settle the parking orbit, wait for the
+    window, eject, coast, correct, capture, circularize, then re-incline.
 
-    target_inclination_deg is relative to the DESTINATION planet -- it
-    describes the final orbit there, not the departure parking orbit.
+    The order matters and is deliberate. Altitude is established before
+    departure, because the ejection calculation is only valid for a
+    circular orbit of known radius. Inclination is left until the very end,
+    once the craft is in a stable circular orbit at the destination,
+    because a plane change is priced by the speed you are travelling at
+    when you make it -- and it is the destination's plane you care about,
+    not the departure one.
+
+    target_inclination_deg is therefore relative to the DESTINATION planet.
+    parking_altitude_m, if given, is the departure parking orbit to
+    establish first; omitted, the craft's current altitude is used and only
+    circularized if needed.
     """
     sc = client.space_center
 
@@ -310,11 +448,21 @@ def run_planet_transfer(client, vessel, job, target_body_name, target_periapsis_
     if target == origin:
         raise ValueError(f"already at {target.name}")
 
+    # Departing from a moon: climb out to the planet first rather than
+    # refusing outright, which is what this used to do.
     if vessel.orbit.body != origin:
-        raise ValueError(
-            f"vessel is orbiting {vessel.orbit.body.name}, not {origin.name} -- "
-            f"return to a {origin.name} parking orbit before starting an interplanetary transfer"
-        )
+        escape_to_parent(client, vessel, job, vessel.orbit.body)
+        if vessel.orbit.body != origin:
+            raise ValueError(
+                f"expected to be orbiting {origin.name} after escaping, but ended up at "
+                f"{vessel.orbit.body.name}"
+            )
+
+    # --- Settle the parking orbit BEFORE planning anything ---
+    # The plan is derived from the parking orbit's radius, so it has to be
+    # computed against the orbit we are actually going to depart from, not
+    # whatever shape the craft happened to arrive in.
+    prepare_parking_orbit(client, vessel, job, origin, parking_altitude_m)
 
     plan = compute_transfer_plan(client, vessel, origin, target)
 
@@ -340,13 +488,41 @@ def run_planet_transfer(client, vessel, job, target_body_name, target_periapsis_
 
     # --- Leave the origin's SOI ---
     job.message = f"climbing out of {origin.name}'s gravity well"
+    escape_deadline = sc.ut + ESCAPE_TIMEOUT_S
     while vessel.orbit.body == origin:
         job.check_abort()
         remaining = vessel.orbit.time_to_soi_change
-        if remaining is not None and remaining > 60:
+
+        # time_to_soi_change is None when the game predicts no SOI change
+        # at all -- i.e. the craft is still on a closed orbit around the
+        # origin and is never going to leave. That means the ejection burn
+        # did not do what it was supposed to.
+        #
+        # This used to just fall through to sleep(1) and loop forever, so
+        # the job sat there reporting "climbing out of Kerbin's gravity
+        # well" indefinitely while the craft quietly stayed in orbit. A
+        # transfer that has failed should say so, not look busy.
+        if remaining is None:
+            if vessel.orbit.eccentricity < 1.0 and vessel.orbit.apoapsis_altitude < origin.sphere_of_influence:
+                raise ValueError(
+                    f"the ejection burn did not put the craft on an escape trajectory from "
+                    f"{origin.name} -- it is still in a closed orbit (apoapsis "
+                    f"{vessel.orbit.apoapsis_altitude / 1000:.0f} km, {origin.name}'s SOI is "
+                    f"{origin.sphere_of_influence / 1000:.0f} km). Most often this means the craft "
+                    f"ran out of fuel partway through the burn; check the remaining delta-v against "
+                    f"the ejection cost shown in the transfer preview."
+                )
+            job.sleep(1)
+        elif remaining > 60:
             sc.warp_to(sc.ut + min(remaining - 30, WARP_CHUNK_S))
         else:
             job.sleep(1)
+
+        if sc.ut > escape_deadline:
+            raise ValueError(
+                f"still inside {origin.name}'s sphere of influence long after the ejection burn -- "
+                f"giving up rather than warping indefinitely"
+            )
 
     _mid_course_correction(client, vessel, job, star, target, plan)
 

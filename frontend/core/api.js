@@ -68,13 +68,14 @@ export const startMoonTransfer = (id, moonName, periapsisM, inclinationDeg) =>
 export const previewMoonTransfer = (id, moonName) =>
   request(autopilot(id, `/moon-transfer/preview?moon_name=${encodeURIComponent(moonName)}`));
 
-export const startPlanetTransfer = (id, targetBodyName, periapsisM, inclinationDeg) =>
+export const startPlanetTransfer = (id, targetBodyName, periapsisM, inclinationDeg, parkingAltitudeM = null) =>
   request(autopilot(id, "/planet-transfer"), {
     method: "POST",
     body: {
       target_body_name: targetBodyName,
       target_periapsis_m: periapsisM,
       target_inclination_deg: inclinationDeg,
+      parking_altitude_m: parkingAltitudeM,
     },
   });
 

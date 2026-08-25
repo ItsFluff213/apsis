@@ -38,6 +38,10 @@ class PlanetTransferRequest(BaseModel):
     target_body_name: str
     target_periapsis_m: float
     target_inclination_deg: float | None = None
+    # Departure parking orbit to establish before the ejection burn. The
+    # ejection math is only valid for a circular orbit of known radius, so
+    # this is settled first; omitted, the craft's current altitude is used.
+    parking_altitude_m: float | None = None
 
 
 class DockingRequest(BaseModel):
@@ -122,6 +126,7 @@ def build_router(client, registry, jobs):
                 target_body_name=body.target_body_name,
                 target_periapsis_m=body.target_periapsis_m,
                 target_inclination_deg=body.target_inclination_deg,
+                parking_altitude_m=body.parking_altitude_m,
             ),
             body.model_dump(),
         )

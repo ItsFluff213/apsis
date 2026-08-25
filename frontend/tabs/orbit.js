@@ -41,6 +41,12 @@ export function mount(container) {
   unsubscribe = telemetry.subscribe((vessels) => {
     empty.style.display = vessels.length ? "none" : "block";
     reconcileCards(grid, vessels, cards, { showParts: true, controls: buildOrbitControls });
+    // A craft that has just changed sphere of influence can reach a
+    // different set of destinations than it could a moment ago.
+    for (const card of cards.values()) {
+      const host = card.root.querySelector(".vessel-controls");
+      if (host && host.refreshTargets) host.refreshTargets();
+    }
   });
 }
 
@@ -62,10 +68,14 @@ function buildOrbitControls(host, vessel) {
     <div class="control-group">
       <span class="group-label">Transfer to</span>
       <select class="tr-target"></select>
-      <input class="tr-periapsis" type="number" placeholder="periapsis km" value="50" />
-      <input class="tr-incl" type="number" placeholder="incl deg (optional)" />
+      <input class="tr-periapsis" type="number" placeholder="arrival orbit km" value="50" />
+      <input class="tr-incl" type="number" placeholder="arrival incl deg (optional)" />
       <button class="tr-preview">Preview</button>
       <button class="tr-start primary">Start transfer</button>
+    </div>
+    <div class="control-group">
+      <span class="group-label">Park at</span>
+      <input class="tr-parking" type="number" placeholder="departure orbit km (blank = current)" />
     </div>
     <div class="transfer-preview" style="display:none;"></div>
     <div class="control-group">
@@ -77,17 +87,41 @@ function buildOrbitControls(host, vessel) {
   const targetSelect = el(".tr-target");
   const previewBox = el(".transfer-preview");
 
-  // Moons and planets in one list. The optgroups aren't decoration: they
-  // are the difference between a transfer that stays inside the parent
-  // body's sphere of influence and one that has to escape it entirely.
-  targetSelect.innerHTML = `
-    <optgroup label="Moons">
-      ${MOON_NAMES.map((n) => `<option value="${n}" data-kind="moon">${n} (${parentPlanetOf(n)})</option>`).join("")}
-    </optgroup>
-    <optgroup label="Planets">
-      ${PLANET_NAMES.map((n) => `<option value="${n}" data-kind="planet">${n}</option>`).join("")}
-    </optgroup>
-  `;
+  // Only offer destinations actually reachable from where the craft is,
+  // and rebuild the list when it moves between bodies.
+  //
+  // This list used to be every moon and every planet, unconditionally,
+  // which invited failures that looked like the autopilot was broken. A
+  // craft in Mun orbit offered "Gilly" would accept the command and then
+  // fail with "'Gilly' is not a satellite of Mun", because a moon transfer
+  // only ever searches the current parent body's own moons.
+  function refreshTargets() {
+    const currentBody = (telemetry.getVessel(vessel.id) || {}).telemetry?.body;
+    if (!currentBody || targetSelect.dataset.forBody === currentBody) return;
+    targetSelect.dataset.forBody = currentBody;
+
+    // Moons of whatever the craft currently orbits. From a moon there are
+    // none -- you have to climb out to the planet first.
+    const reachableMoons = MOON_NAMES.filter((n) => parentPlanetOf(n) === currentBody);
+    // Any planet other than the one we're at (or the one our moon belongs
+    // to); departing from a moon escapes to its planet automatically.
+    const departurePlanet = PLANET_NAMES.includes(currentBody) ? currentBody : parentPlanetOf(currentBody);
+    const reachablePlanets = PLANET_NAMES.filter((n) => n !== departurePlanet);
+
+    const previous = targetSelect.value;
+    targetSelect.innerHTML = `
+      ${reachableMoons.length ? `<optgroup label="Moons of ${currentBody}">
+        ${reachableMoons.map((n) => `<option value="${n}" data-kind="moon">${n}</option>`).join("")}
+      </optgroup>` : ""}
+      <optgroup label="Planets">
+        ${reachablePlanets.map((n) => `<option value="${n}" data-kind="planet">${n}</option>`).join("")}
+      </optgroup>
+    `;
+    if ([...targetSelect.options].some((o) => o.value === previous)) targetSelect.value = previous;
+  }
+
+  refreshTargets();
+  host.refreshTargets = refreshTargets;
 
   const card = () => cards.get(vessel.id);
   const status = (msg, kind) => card() && card().setStatus(msg, kind);
@@ -119,22 +153,26 @@ function buildOrbitControls(host, vessel) {
   function transferArgs() {
     const periapsisM = Number(el(".tr-periapsis").value) * 1000;
     const inclRaw = el(".tr-incl").value.trim();
+    const parkingRaw = el(".tr-parking").value.trim();
     return {
       periapsisM,
       inclinationDeg: inclRaw === "" ? null : Number(inclRaw),
+      // Blank means "use whatever orbit the craft is already in", which
+      // still gets circularized before departure if it needs it.
+      parkingAltitudeM: parkingRaw === "" ? null : Number(parkingRaw) * 1000,
     };
   }
 
   el(".tr-start").addEventListener("click", async () => {
     const { name, kind } = selectedTarget();
-    const { periapsisM, inclinationDeg } = transferArgs();
+    const { periapsisM, inclinationDeg, parkingAltitudeM } = transferArgs();
     if (!Number.isFinite(periapsisM) || periapsisM <= 0) {
-      status("enter a target periapsis in km", "error");
+      status("enter an arrival orbit altitude in km", "error");
       return;
     }
     try {
       if (kind === "planet") {
-        await api.startPlanetTransfer(vessel.id, name, periapsisM, inclinationDeg);
+        await api.startPlanetTransfer(vessel.id, name, periapsisM, inclinationDeg, parkingAltitudeM);
       } else {
         await api.startMoonTransfer(vessel.id, name, periapsisM, inclinationDeg);
       }

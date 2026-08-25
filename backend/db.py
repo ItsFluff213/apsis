@@ -243,21 +243,26 @@ def list_profiles():
 
 
 def upsert_seen(vessel_id: str, default_name: str):
+    """Record that a vessel exists and was seen just now.
+
+    A single atomic upsert rather than SELECT-then-INSERT. The old version
+    checked for the row and then inserted it, which is a race: two
+    telemetry loops running concurrently -- several dashboard tabs, or a
+    second Apsis instance against the same database file -- could both see
+    no row and both insert. Confirmed live as repeated "UNIQUE constraint
+    failed: vessels.id, vessels.save_profile" errors, each of which threw
+    away that entire tick's vessel list.
+
+    ON CONFLICT also preserves the existing `name`, so a user's custom name
+    is never reset to the in-game one by a later sighting.
+    """
     profile = get_active_profile()
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT id FROM vessels WHERE id = ? AND save_profile = ?", (vessel_id, profile)
-        ).fetchone()
-        if row is None:
-            conn.execute(
-                "INSERT INTO vessels (id, name, save_profile) VALUES (?, ?, ?)",
-                (vessel_id, default_name, profile),
-            )
-        else:
-            conn.execute(
-                "UPDATE vessels SET last_seen = datetime('now') WHERE id = ? AND save_profile = ?",
-                (vessel_id, profile),
-            )
+        conn.execute(
+            "INSERT INTO vessels (id, name, save_profile) VALUES (?, ?, ?) "
+            "ON CONFLICT(id, save_profile) DO UPDATE SET last_seen = datetime('now')",
+            (vessel_id, default_name, profile),
+        )
 
 
 def get(vessel_id: str):

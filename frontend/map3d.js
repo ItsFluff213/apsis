@@ -44,6 +44,60 @@ const BODY_COLORS = {
 };
 const DEFAULT_BODY_COLOR = 0x9aa4bf;
 
+// --- Object sizing ------------------------------------------------------
+//
+// Everything drawn here is scaled every frame to hold a roughly constant
+// SIZE ON SCREEN, rather than a constant size in world units.
+//
+// Fixed world sizes cannot work on a map like this, because the map spans
+// four orders of magnitude. Planet orbits run from Moho at 31 world units
+// out to Eeloo at 530, while a planet sphere was a fixed radius of 3.2 and
+// a vessel cone 2.8 long. Framing the whole system therefore drew planets
+// about 2px across, moons about 1px, and vessels under a pixel -- i.e.
+// invisible, which is exactly when you most want to see where everything
+// is. Zooming in to one planet had the opposite problem: the same fixed
+// sphere swelled to fill the view and swallowed its own moons.
+//
+// Scaling by distance from the camera fixes both ends at once, and is what
+// KSP's own tracking station does. BASE_SIZES are relative visual weights,
+// not physical radii -- the real ones differ by far too much to draw
+// literally (Jool's radius is 100x Gilly's), but a gas giant should still
+// read as bigger than Moho at a glance.
+const ANGULAR_SIZE = 0.014; // world units of radius per unit of camera distance
+const MIN_WORLD_SIZE = 0.6; // stops objects vanishing when the camera is right on top
+const MAX_WORLD_SIZE = 14; // stops a close-up planet swallowing the whole view
+
+const GAS_GIANTS = new Set(["Jool"]);
+const BASE_SIZES = { sun: 2.6, gasGiant: 1.7, planet: 1.0, moon: 0.62, vessel: 0.42 };
+
+function baseSizeForBody(name, isMoon) {
+  if (isMoon) return BASE_SIZES.moon;
+  if (GAS_GIANTS.has(name)) return BASE_SIZES.gasGiant;
+  return BASE_SIZES.planet;
+}
+
+/**
+ * Resize one object so it subtends about the same angle regardless of how
+ * far away the camera is. `extra` is a multiplier for transient emphasis,
+ * e.g. highlighting the active vessel.
+ */
+function applyScreenSize(mesh, baseSize, extra = 1) {
+  const distance = camera.position.distanceTo(mesh.position);
+  const size = Math.min(MAX_WORLD_SIZE, Math.max(MIN_WORLD_SIZE, distance * ANGULAR_SIZE));
+  mesh.scale.setScalar(size * baseSize * extra);
+}
+
+/** Rescale everything in the scene. Called once per frame from animate(). */
+function updateObjectScales() {
+  if (sunMesh) applyScreenSize(sunMesh, BASE_SIZES.sun);
+  for (const entry of bodyMeshes.values()) {
+    applyScreenSize(entry.mesh, entry.baseSize);
+  }
+  for (const entry of vesselIcons.values()) {
+    applyScreenSize(entry.mesh, BASE_SIZES.vessel, entry.activeBoost || 1);
+  }
+}
+
 let scene, camera, renderer, controls, container;
 // The map is built lazily, when the Overview tab first mounts its
 // container -- so every public entry point has to tolerate being called
@@ -158,7 +212,7 @@ function init() {
 
   // Sun
   sunMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(7.5, 24, 24),
+    new THREE.SphereGeometry(1, 24, 24),
     new THREE.MeshBasicMaterial({ color: 0xffe9a8 }),
   );
   scene.add(sunMesh);
@@ -248,6 +302,9 @@ function updateHover() {
 function animate() {
   requestAnimationFrame(animate);
   controls.update();
+  // Must run after controls.update() (the camera may have just moved) and
+  // before rendering, so sizes match the frame actually drawn.
+  updateObjectScales();
   updateHover();
   renderer.render(scene, camera);
 }
@@ -287,10 +344,11 @@ function setBodies(positions) {
     if (name === "Sun") continue;
     let entry = bodyMeshes.get(name);
     if (!entry) {
-      const radius = pos.isMoon ? 1.8 : 3.2;
+      // Unit radius: actual on-screen size comes from the per-frame scale
+      // in updateObjectScales(), so the geometry is just a unit shape.
       const color = BODY_COLORS[name] !== undefined ? BODY_COLORS[name] : DEFAULT_BODY_COLOR;
       const mesh = new THREE.Mesh(
-        new THREE.SphereGeometry(radius, 20, 20),
+        new THREE.SphereGeometry(1, 20, 20),
         new THREE.MeshStandardMaterial({ color, roughness: 0.75, emissive: color, emissiveIntensity: 0.12 }),
       );
       scene.add(mesh);
@@ -299,7 +357,7 @@ function setBodies(positions) {
       const ring = new THREE.Line(ringGeo, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.45 }));
       scene.add(ring);
 
-      entry = { mesh, ring, ringKind: null };
+      entry = { mesh, ring, ringKind: null, baseSize: baseSizeForBody(name, pos.isMoon) };
       bodyMeshes.set(name, entry);
     }
     entry.mesh.position.set(pos.x, 0, pos.y);
@@ -412,10 +470,12 @@ function setVessels(vessels) {
     if (!entry) {
       const category = CATEGORY_COLORS[vessel.type] !== undefined ? vessel.type : "unknown";
       // A cone reads as "a craft" at a glance (and shows heading via its
-      // point) where a plain sphere was just a dot -- radius 0.7, height
-      // 2.2, nose pointing along +Y by default (Three.js cone convention).
+      // point) where a plain sphere was just a dot. Built around unit size
+      // -- kept slightly taller than wide so the nose direction is
+      // readable -- with on-screen size applied per frame by
+      // updateObjectScales(). Nose points along +Y (Three.js convention).
       const mesh = new THREE.Mesh(
-        new THREE.ConeGeometry(0.9, 2.8, 12),
+        new THREE.ConeGeometry(0.62, 2.0, 12),
         new THREE.MeshBasicMaterial({ color: CATEGORY_COLORS[category] }),
       );
       const trajGeo = new THREE.BufferGeometry();
@@ -425,7 +485,7 @@ function setVessels(vessels) {
       );
       scene.add(mesh);
       scene.add(trajectory);
-      entry = { mesh, trajectory, category: null, trajKey: null };
+      entry = { mesh, trajectory, category: null, trajKey: null, activeBoost: 1 };
       vesselIcons.set(vessel.id, entry);
     }
     if (entry.category !== vessel.type) {
@@ -437,7 +497,9 @@ function setVessels(vessels) {
 
     const local = vesselLocalPosition(t);
     entry.mesh.position.set(bodyPos.x + local.x, local.y, bodyPos.z + local.z);
-    entry.mesh.scale.setScalar(vessel.is_active ? 1.6 : 1.0);
+    // Recorded rather than applied directly: updateObjectScales() owns the
+    // scale each frame, so setting it here would just be overwritten.
+    entry.activeBoost = vessel.is_active ? 1.6 : 1.0;
     // Point the cone's tip (ConeGeometry's default +Y axis) along the
     // vessel's actual direction of travel instead of a fixed orientation.
     const heading = vesselHeadingDirection(t);
